@@ -14,8 +14,10 @@ class SensitiveDataDetector:
     
     def __init__(self):
         # Regex patterns for different data types
+        # Aadhaar: Requires "Aadhaar Card No" or similar prefix followed by 12 digits (with or without spaces)
+        # This ensures we match actual Aadhaar card numbers in context, not just random 12-digit numbers
         self.patterns = {
-            "aadhaar": r"\b\d{4}\s?\d{4}\s?\d{4}\b",
+            "aadhaar": r"(?i)(aadhaar\s+card\s+no\.?|aadhar\s+card\s+no\.?|aadhaar\s+number|enrollment\s+number)\s*[:\-]?\s*(\d{4}\s?\d{4}\s?\d{4}|\d{12})",
             "pan": r"\b[A-Z]{5}[0-9]{4}[A-Z]{1}\b",
             "bank_account": r"\b\d{9,18}\b",
             "voter_id": r"\b[A-Z]{3}[0-9]{7}\b",
@@ -24,26 +26,34 @@ class SensitiveDataDetector:
         
         # Context keywords to improve detection accuracy
         self.context_keywords = {
-            "aadhaar": ["aadhaar", "aadhar", "uid", "uidai", "enrollment"],
+            "aadhaar": ["aadhaar", "aadhar", "uid", "uidai", "enrollment", "card no"],
             "pan": ["pan", "permanent account", "income tax"],
             "bank_account": ["account", "bank", "ifsc", "account number"],
             "voter_id": ["voter", "epic", "election"],
             "passport": ["passport", "travel document"]
         }
     
-    def detect_all(self, text: str) -> Dict[str, List[Dict]]:
+    def detect_all(self, text: str, selected_types: List[str] = None) -> Dict[str, List[Dict]]:
         """
-        Detect all types of sensitive data in text
+        Detect specific types of sensitive data in text
+        
+        Args:
+            text: Text to scan
+            selected_types: List of data types to detect. If None, detect all types
         
         Returns:
             Dictionary with data_type as key and list of detections
         """
         results = {}
         
-        for data_type in self.patterns.keys():
-            detections = self.detect_pattern(text, data_type)
-            if detections:
-                results[data_type] = detections
+        # Use selected_types if provided, otherwise scan all patterns
+        types_to_scan = selected_types if selected_types else list(self.patterns.keys())
+        
+        for data_type in types_to_scan:
+            if data_type in self.patterns:
+                detections = self.detect_pattern(text, data_type)
+                if detections:
+                    results[data_type] = detections
         
         return results
     
@@ -59,19 +69,33 @@ class SensitiveDataDetector:
             return []
         
         pattern = self.patterns[data_type]
-        matches = re.finditer(pattern, text, re.MULTILINE)
+        matches = re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE)
         
         detections = []
+        seen_numbers = set()  # Track unique numbers to avoid duplicates
+        
         for match in matches:
             matched_text = match.group()
+            
+            # For Aadhaar, extract the actual number for duplicate checking
+            if data_type == "aadhaar":
+                numbers = re.findall(r'\d+', matched_text)
+                clean_number = ''.join(numbers) if numbers else ""
+                
+                # Skip if we've already detected this number
+                if clean_number in seen_numbers:
+                    continue
+                
+                if clean_number:
+                    seen_numbers.add(clean_number)
             
             # Validate the match
             is_valid, confidence = self._validate_match(matched_text, data_type, text, match.start())
             
             if is_valid:
-                # Extract context (50 characters before and after)
-                start = max(0, match.start() - 50)
-                end = min(len(text), match.end() + 50)
+                # Extract context (80 characters before and after)
+                start = max(0, match.start() - 80)
+                end = min(len(text), match.end() + 80)
                 context = text[start:end].replace('\n', ' ')
                 
                 detections.append({
@@ -109,7 +133,10 @@ class SensitiveDataDetector:
         
         # Type-specific validation
         if data_type == "aadhaar":
-            confidence += self._validate_aadhaar(matched_text)
+            aadhaar_score = self._validate_aadhaar(matched_text)
+            if aadhaar_score == 0.0:  # Validation failed (e.g., masked number)
+                return False, 0.0
+            confidence += aadhaar_score
         elif data_type == "pan":
             confidence += self._validate_pan(matched_text)
         elif data_type == "bank_account":
@@ -123,22 +150,46 @@ class SensitiveDataDetector:
         
         return is_valid, confidence
     
-    def _validate_aadhaar(self, number: str) -> float:
-        """Validate Aadhaar number with Verhoeff checksum"""
-        # Remove spaces and hyphens
-        clean_number = re.sub(r'[\s-]', '', number)
+    def _validate_aadhaar(self, matched_text: str) -> float:
+        """
+        Validate Aadhaar number with enhanced checks:
+        1. Extract actual number (with or without spaces)
+        2. Reject masked numbers (XXXX XXXX 1234)
+        3. Validate checksum
+        4. Ensure number portion exists
+        """
+        # Extract the numeric part from the match
+        numbers = re.findall(r'\d+', matched_text)
         
+        if not numbers:
+            return 0.0  # No numbers found, reject
+        
+        # Combine all numbers (handles both spaced and non-spaced formats)
+        clean_number = ''.join(numbers)
+        
+        # Must be exactly 12 digits
         if len(clean_number) != 12:
             return 0.0
+        
+        # Check if it's a masked number (contains or appears as XXXX XXXX XXXX pattern)
+        if 'x' in matched_text.lower() or matched_text.count('X') > 0:
+            logger.info(f"⚠️ Masked Aadhaar detected, rejecting: {matched_text}")
+            return 0.0  # Reject masked numbers
+        
+        # Check if all digits are the same (invalid Aadhaar)
+        if len(set(clean_number)) == 1:
+            return 0.0  # All same digits, invalid
         
         # Verhoeff checksum validation
         try:
             if self._verhoeff_checksum(clean_number):
-                return 30.0  # +30% for valid checksum
-        except:
+                logger.info(f"✅ Valid Aadhaar checksum: {clean_number[-4:]}...")
+                return 35.0  # +35% for valid checksum
+        except Exception as e:
+            logger.debug(f"Checksum validation error: {e}")
             pass
         
-        return 10.0  # +10% for correct length
+        return 15.0  # +15% for correct length and format (without checksum validation)
     
     def _verhoeff_checksum(self, number: str) -> bool:
         """Verhoeff algorithm for Aadhaar validation"""
@@ -211,17 +262,29 @@ class SensitiveDataDetector:
     
     def _anonymize(self, text: str, data_type: str) -> str:
         """Anonymize sensitive data for evidence storage"""
+        # Extract only numbers for Aadhaar
+        if data_type == "aadhaar":
+            numbers = re.findall(r'\d+', text)
+            clean_text = ''.join(numbers)
+            if len(clean_text) >= 4:
+                # Show only last 4 digits: XXXX XXXX 1234
+                return f"XXXX XXXX {clean_text[-4:]}"
+            return "AADHAAR_DETECTED"
+        
         clean_text = re.sub(r'[\s-]', '', text)
         
-        if data_type == "aadhaar":
-            # Show only last 4 digits: XXXX XXXX 1234
-            return f"XXXX XXXX {clean_text[-4:]}"
-        elif data_type == "pan":
+        if data_type == "pan":
             # Show only first and last character: AXXXX9999X
-            return f"{text[0]}XXXX{text[5:9]}{text[-1]}"
+            if len(text) >= 5:
+                return f"{text[0]}XXXX{text[5:9]}{text[-1]}"
+            return "PAN_DETECTED"
         elif data_type == "bank_account":
             # Show only last 4 digits
-            return f"XXXXXX{clean_text[-4:]}"
+            if len(clean_text) >= 4:
+                return f"XXXXXX{clean_text[-4:]}"
+            return "ACCOUNT_DETECTED"
         else:
             # Default: show last 4 characters
-            return f"XXX...{text[-4:]}"
+            if len(text) >= 4:
+                return f"XXX...{text[-4:]}"
+            return f"XXX...{text}"

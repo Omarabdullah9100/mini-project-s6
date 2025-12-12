@@ -59,6 +59,11 @@ settings = Settings()
 
 def get_next_api_key():
     """Rotate through available API keys for rate limiting"""
+    if not settings.google_api_keys or not settings.google_search_engine_ids:
+        logger_instance = __import__('logging').getLogger(__name__)
+        logger_instance.warning("⚠️ No Google API keys configured. Set GOOGLE_API_KEYS and GOOGLE_SEARCH_ENGINE_IDS in .env")
+        return "", ""
+    
     settings.current_api_index = (settings.current_api_index + 1) % len(settings.google_api_keys)
     api_key = settings.google_api_keys[settings.current_api_index]
     search_engine_id = settings.google_search_engine_ids[settings.current_api_index]
