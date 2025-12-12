@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cybersecurity Detection Framework - Module 1</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- Header -->
+    <header>
+        <div class="container">
+            <h1>🔒 Automated Cybersecurity Detection Framework</h1>
+            <p class="subtitle">Protecting Indian Government Digital Infrastructure</p>
+        </div>
+    </header>
+
+    <!-- Main Dashboard -->
+    <main class="container">
+        <!-- Module Selection -->
+        <section class="module-selection" id="moduleSelection">
+            <h2>Select Detection Module</h2>
+            <div class="button-grid">
+                <button class="module-button active" onclick="selectModule('module1')">
+                    <div class="icon">📄</div>
+                    <h3>Module 1</h3>
+                    <p>Sensitive Data Exposure Detection</p>
+                    <span class="status">● Active</span>
+                </button>
+                
+                <button class="module-button disabled" onclick="alert('Module 2 - Coming Soon!')">
+                    <div class="icon">🕵️</div>
+                    <h3>Module 2</h3>
+                    <p>Phishing & Spoofed Website Detection</p>
+                    <span class="status-disabled">○ Coming Soon</span>
+                </button>
+            </div>
+        </section>
+
+        <!-- Module 1: Sensitive Data Scan -->
+        <section class="scan-section" id="module1Section">
+            <h2>🔍 Sensitive Data Exposure Scan</h2>
+            
+            <!-- Scan Configuration -->
+            <div class="config-panel">
+                <h3>Scan Configuration</h3>
+                
+                <div class="form-group">
+                    <label>Data Types to Detect:</label>
+                    <div class="checkbox-grid">
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="dataType" value="aadhaar" checked>
+                            <span>Aadhaar Numbers</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="dataType" value="pan" checked>
+                            <span>PAN Cards</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="dataType" value="bank_account">
+                            <span>Bank Accounts</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="dataType" value="voter_id">
+                            <span>Voter IDs</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="dataType" value="passport">
+                            <span>Passport Numbers</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>File Types:</label>
+                    <div class="checkbox-grid">
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="fileType" value="pdf" checked>
+                            <span>PDF</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="fileType" value="doc" checked>
+                            <span>DOC</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="fileType" value="docx" checked>
+                            <span>DOCX</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="fileType" value="html">
+                            <span>HTML</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="domain">Domain Scope:</label>
+                        <input type="text" id="domain" value="gov.in" placeholder="gov.in">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="maxResults">Max Results:</label>
+                        <input type="number" id="maxResults" value="10" min="1" max="50">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="sendEmail" checked>
+                        <span>Automatically send report to CERT-In (vdisclose@cert-in.org.in)</span>
+                    </label>
+                </div>
+
+                <button class="btn-primary" onclick="startScan()">
+                    🚀 Start Scan
+                </button>
+            </div>
+
+            <!-- Scan Progress -->
+            <div class="progress-panel" id="progressPanel" style="display: none;">
+                <h3>Scan in Progress...</h3>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <p class="progress-text" id="progressText">Initializing scan...</p>
+                <div class="scan-stats">
+                    <div class="stat-item">
+                        <span class="stat-label">Scan ID:</span>
+                        <span class="stat-value" id="scanId">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Status:</span>
+                        <span class="stat-value" id="scanStatus">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Detections:</span>
+                        <span class="stat-value" id="detectionsCount">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Results Panel -->
+            <div class="results-panel" id="resultsPanel" style="display: none;">
+                <h3>Scan Results</h3>
+                <div class="results-summary" id="resultsSummary"></div>
+                <div class="results-table-container">
+                    <table class="results-table" id="resultsTable">
+                        <thead>
+                            <tr>
+                                <th>Data Type</th>
+                                <th>File URL</th>
+                                <th>Confidence</th>
+                                <th>Evidence</th>
+                            </tr>
+                        </thead>
+                        <tbody id="resultsTableBody">
+                        </tbody>
+                    </table>
+                </div>
+                <div class="action-buttons">
+                    <button class="btn-secondary" onclick="exportResults()">📥 Export Results</button>
+                    <button class="btn-secondary" onclick="viewFullReport()">📄 View Full Report</button>
+                    <button class="btn-primary" onclick="resetScan()">🔄 New Scan</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Recent Scans -->
+        <section class="recent-scans" id="recentScans">
+            <h2>📊 Recent Scans</h2>
+            <div id="recentScansList" class="scans-list">
+                <p class="empty-state">No recent scans. Start your first scan above.</p>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Automated Cybersecurity Detection Framework | 
+               <a href="mailto:vdisclose@cert-in.org.in">CERT-In</a> | 
+               Ethical Security Research</p>
+        </div>
+    </footer>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

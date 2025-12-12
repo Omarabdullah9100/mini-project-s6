@@ -1,0 +1,456 @@
+/* Black & White Design - Cybersecurity Detection Framework */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --black: #000000;
+    --white: #FFFFFF;
+    --gray-dark: #2a2a2a;
+    --gray-medium: #4a4a4a;
+    --gray-light: #d0d0d0;
+    --gray-lighter: #f5f5f5;
+}
+
+body {
+    font-family: 'Arial', 'Helvetica', sans-serif;
+    background-color: var(--white);
+    color: var(--black);
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+/* Header */
+header {
+    background-color: var(--black);
+    color: var(--white);
+    padding: 30px 0;
+    border-bottom: 4px solid var(--gray-dark);
+}
+
+header h1 {
+    font-size: 2rem;
+    margin-bottom: 5px;
+}
+
+.subtitle {
+    font-size: 0.9rem;
+    color: var(--gray-light);
+}
+
+/* Main Content */
+main {
+    padding: 40px 0;
+}
+
+/* Module Selection */
+.module-selection {
+    margin-bottom: 40px;
+}
+
+.module-selection h2 {
+    font-size: 1.5rem;
+    margin-bottom: 20px;
+    border-bottom: 2px solid var(--black);
+    padding-bottom: 10px;
+}
+
+.button-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.module-button {
+    background-color: var(--white);
+    border: 3px solid var(--black);
+    padding: 30px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-align: center;
+    position: relative;
+}
+
+.module-button:hover:not(.disabled) {
+    background-color: var(--black);
+    color: var(--white);
+    transform: translateY(-5px);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+}
+
+.module-button.active {
+    background-color: var(--black);
+    color: var(--white);
+}
+
+.module-button.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    border-style: dashed;
+}
+
+.module-button .icon {
+    font-size: 3rem;
+    margin-bottom: 15px;
+}
+
+.module-button h3 {
+    font-size: 1.3rem;
+    margin-bottom: 10px;
+}
+
+.module-button p {
+    font-size: 0.9rem;
+    margin-bottom: 15px;
+}
+
+.status {
+    display: inline-block;
+    padding: 5px 15px;
+    background-color: var(--white);
+    color: var(--black);
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: bold;
+}
+
+.module-button.active .status {
+    background-color: var(--white);
+    color: var(--black);
+}
+
+.status-disabled {
+    display: inline-block;
+    padding: 5px 15px;
+    background-color: var(--gray-lighter);
+    color: var(--gray-medium);
+    border-radius: 20px;
+    font-size: 0.8rem;
+}
+
+/* Scan Section */
+.scan-section {
+    background-color: var(--gray-lighter);
+    border: 2px solid var(--black);
+    padding: 30px;
+    margin-bottom: 40px;
+}
+
+.scan-section h2 {
+    font-size: 1.5rem;
+    margin-bottom: 25px;
+    border-bottom: 2px solid var(--black);
+    padding-bottom: 10px;
+}
+
+/* Configuration Panel */
+.config-panel {
+    background-color: var(--white);
+    border: 2px solid var(--black);
+    padding: 25px;
+    margin-bottom: 20px;
+}
+
+.config-panel h3 {
+    margin-bottom: 20px;
+    font-size: 1.2rem;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 8px;
+    color: var(--black);
+}
+
+.form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+input[type="text"],
+input[type="number"] {
+    width: 100%;
+    padding: 10px;
+    border: 2px solid var(--black);
+    background-color: var(--white);
+    color: var(--black);
+    font-size: 1rem;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus {
+    outline: none;
+    border-color: var(--gray-dark);
+    background-color: var(--gray-lighter);
+}
+
+.checkbox-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    padding: 8px;
+    border: 1px solid var(--gray-light);
+    transition: all 0.2s ease;
+}
+
+.checkbox-label:hover {
+    background-color: var(--gray-lighter);
+    border-color: var(--black);
+}
+
+.checkbox-label input[type="checkbox"] {
+    margin-right: 8px;
+    cursor: pointer;
+    width: 18px;
+    height: 18px;
+}
+
+/* Buttons */
+.btn-primary,
+.btn-secondary {
+    padding: 12px 30px;
+    font-size: 1rem;
+    font-weight: bold;
+    cursor: pointer;
+    border: 2px solid var(--black);
+    transition: all 0.3s ease;
+}
+
+.btn-primary {
+    background-color: var(--black);
+    color: var(--white);
+}
+
+.btn-primary:hover {
+    background-color: var(--white);
+    color: var(--black);
+}
+
+.btn-secondary {
+    background-color: var(--white);
+    color: var(--black);
+    margin-right: 10px;
+}
+
+.btn-secondary:hover {
+    background-color: var(--black);
+    color: var(--white);
+}
+
+/* Progress Panel */
+.progress-panel {
+    background-color: var(--white);
+    border: 2px solid var(--black);
+    padding: 25px;
+    margin-bottom: 20px;
+}
+
+.progress-panel h3 {
+    margin-bottom: 15px;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 30px;
+    background-color: var(--gray-lighter);
+    border: 2px solid var(--black);
+    margin-bottom: 15px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background-color: var(--black);
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+.progress-text {
+    font-size: 0.9rem;
+    color: var(--gray-dark);
+    margin-bottom: 15px;
+}
+
+.scan-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 15px;
+    margin-top: 20px;
+}
+
+.stat-item {
+    padding: 10px;
+    background-color: var(--gray-lighter);
+    border: 1px solid var(--black);
+}
+
+.stat-label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--gray-medium);
+    margin-bottom: 5px;
+}
+
+.stat-value {
+    display: block;
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: var(--black);
+}
+
+/* Results Panel */
+.results-panel {
+    background-color: var(--white);
+    border: 2px solid var(--black);
+    padding: 25px;
+}
+
+.results-summary {
+    background-color: var(--gray-lighter);
+    border-left: 4px solid var(--black);
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+.results-table-container {
+    overflow-x: auto;
+    margin-bottom: 20px;
+}
+
+.results-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 2px solid var(--black);
+}
+
+.results-table th,
+.results-table td {
+    padding: 12px;
+    text-align: left;
+    border: 1px solid var(--black);
+}
+
+.results-table th {
+    background-color: var(--black);
+    color: var(--white);
+    font-weight: bold;
+}
+
+.results-table tbody tr:nth-child(even) {
+    background-color: var(--gray-lighter);
+}
+
+.results-table tbody tr:hover {
+    background-color: var(--gray-light);
+}
+
+.confidence-high {
+    font-weight: bold;
+    color: var(--black);
+}
+
+.confidence-medium {
+    color: var(--gray-dark);
+}
+
+.action-buttons {
+    margin-top: 20px;
+}
+
+/* Recent Scans */
+.recent-scans {
+    background-color: var(--gray-lighter);
+    border: 2px solid var(--black);
+    padding: 30px;
+}
+
+.recent-scans h2 {
+    font-size: 1.3rem;
+    margin-bottom: 20px;
+    border-bottom: 2px solid var(--black);
+    padding-bottom: 10px;
+}
+
+.scans-list {
+    display: grid;
+    gap: 15px;
+}
+
+.scan-item {
+    background-color: var(--white);
+    border: 1px solid var(--black);
+    padding: 15px;
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.scan-item:hover {
+    background-color: var(--black);
+    color: var(--white);
+}
+
+.empty-state {
+    text-align: center;
+    color: var(--gray-medium);
+    padding: 40px;
+    font-style: italic;
+}
+
+/* Footer */
+footer {
+    background-color: var(--black);
+    color: var(--white);
+    padding: 20px 0;
+    margin-top: 60px;
+    border-top: 4px solid var(--gray-dark);
+    text-align: center;
+}
+
+footer a {
+    color: var(--gray-light);
+    text-decoration: none;
+    border-bottom: 1px solid var(--gray-light);
+}
+
+footer a:hover {
+    color: var(--white);
+    border-bottom-color: var(--white);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .button-grid,
+    .form-row,
+    .checkbox-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    header h1 {
+        font-size: 1.5rem;
+    }
+    
+    .module-button {
+        padding: 20px;
+    }
+}
