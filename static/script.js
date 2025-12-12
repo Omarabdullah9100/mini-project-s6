@@ -147,16 +147,43 @@ function displayResults(data) {
     if (detections.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px;">✅ No sensitive data leaks detected!</td></tr>';
     } else {
+        // Track URLs to avoid duplicates
+        const processedUrls = new Set();
+        
         detections.forEach(detection => {
-            const evidence = JSON.parse(detection.evidence);
-            const confidenceClass = detection.confidence >= 80 ? 'confidence-high' : 'confidence-medium';
+            // Skip if URL already displayed
+            if (processedUrls.has(detection.file_url)) {
+                return;
+            }
+            processedUrls.add(detection.file_url);
+            
+            // Get all detections for this URL
+            const urlDetections = detections.filter(d => d.file_url === detection.file_url);
+            
+            // Consolidate data types
+            const dataTypes = urlDetections
+                .map(d => d.data_type)
+                .filter((type, index, self) => self.indexOf(type) === index); // Remove duplicates
+            
+            // Get highest confidence
+            const maxConfidence = Math.max(...urlDetections.map(d => d.confidence));
+            const confidenceClass = maxConfidence >= 80 ? 'confidence-high' : 'confidence-medium';
+            
+            // Get first evidence for context
+            const firstDetection = urlDetections[0];
+            let evidence = '';
+            try {
+                evidence = JSON.parse(firstDetection.evidence).context || firstDetection.evidence;
+            } catch {
+                evidence = firstDetection.evidence || '';
+            }
             
             const row = document.createElement('tr');
             row.innerHTML = `
-                <td><strong>${detection.data_type.replace('_', ' ').toUpperCase()}</strong></td>
+                <td><strong>${dataTypes.join(', ').replace(/_/g, ' ').toUpperCase()}</strong></td>
                 <td><a href="${detection.file_url}" target="_blank" style="color: #000; text-decoration: underline;">${detection.file_url.substring(0, 60)}...</a></td>
-                <td class="${confidenceClass}">${detection.confidence.toFixed(1)}%</td>
-                <td>${evidence.context.substring(0, 80)}...</td>
+                <td class="${confidenceClass}">${maxConfidence.toFixed(1)}%</td>
+                <td>${evidence.substring(0, 80)}...</td>
             `;
             tbody.appendChild(row);
         });

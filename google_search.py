@@ -30,6 +30,11 @@ class GoogleSearchAPI:
         Returns:
             List of search results with URLs and metadata
         """
+        # Check if API keys are configured
+        if not settings.google_api_keys or not settings.google_search_engine_ids:
+            logger.error("❌ No Google API keys configured. Please set GOOGLE_API_KEYS and GOOGLE_SEARCH_ENGINE_IDS in .env file")
+            return []
+        
         results = []
         attempts = 0
         
@@ -37,6 +42,10 @@ class GoogleSearchAPI:
             try:
                 # Get next API key and search engine ID
                 api_key, search_engine_id = get_next_api_key()
+                
+                if not api_key or not search_engine_id:
+                    logger.error("❌ Invalid API key or search engine ID")
+                    return []
                 
                 # Build search query
                 search_query = query
@@ -58,15 +67,18 @@ class GoogleSearchAPI:
                 # Extract results
                 if "items" in response:
                     for item in response["items"]:
-                        results.append({
-                            "title": item.get("title", ""),
-                            "link": item.get("link", ""),
-                            "snippet": item.get("snippet", ""),
-                            "file_format": item.get("fileFormat", ""),
-                            "mime": item.get("mime", "")
-                        })
+                        url = item.get("link", "")
+                        # Validate URL is not empty
+                        if url:
+                            results.append({
+                                "title": item.get("title", ""),
+                                "link": url,
+                                "snippet": item.get("snippet", ""),
+                                "file_format": item.get("fileFormat", ""),
+                                "mime": item.get("mime", "")
+                            })
                 
-                logger.info(f"✅ Found {len(results)} results")
+                logger.info(f"✅ Found {len(results)} valid results")
                 return results
                 
             except HttpError as e:
@@ -98,27 +110,36 @@ class GoogleSearchAPI:
         """
         queries = []
         
-        # Mapping of data types to search keywords
-        keywords_map = {
-            "aadhaar": ["aadhaar", "aadhar", "uid", "uidai"],
-            "pan": ["pan card", "pan number", "permanent account"],
-            "bank_account": ["bank account", "account number", "ifsc"],
-            "voter_id": ["voter id", "epic", "election card"],
-            "passport": ["passport", "passport number"],
-            "salary": ["salary slip", "pay slip", "salary details"]
+        # Mapping of data types to specific dork queries
+        dork_queries = {
+            "aadhaar": [
+                f'site:{domain} ext:pdf "Aadhaar Card No" -site:uidai.gov.in'
+            ],
+            "pan": [
+                f'site:{domain} ext:pdf "Pan Card"',
+                f'site:{domain} ext:pdf "Permanent Account Number"'
+            ],
+            "bank_account": [
+                f'site:{domain} ext:pdf "Account Number" "IFSC"',
+                f'site:{domain} ext:pdf "Bank Account"'
+            ],
+            "voter_id": [
+                f'site:{domain} ext:pdf "Voter ID"',
+                f'site:{domain} ext:pdf "EPIC Number"'
+            ],
+            "passport": [
+                f'site:{domain} ext:pdf "Passport Number"'
+            ]
         }
         
         for data_type in data_types:
-            if data_type in keywords_map:
-                for keyword in keywords_map[data_type]:
-                    # Generate query for each file type
-                    for file_type in ["pdf", "doc", "docx"]:
-                        query = f'site:{domain} ext:{file_type} "{keyword}"'
-                        queries.append({
-                            "query": query,
-                            "data_type": data_type,
-                            "file_type": file_type
-                        })
+            if data_type in dork_queries:
+                for dork in dork_queries[data_type]:
+                    queries.append({
+                        "query": dork,
+                        "data_type": data_type,
+                        "file_type": "pdf"
+                    })
         
         logger.info(f"📋 Generated {len(queries)} dorking queries")
         return queries

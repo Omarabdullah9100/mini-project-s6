@@ -11,6 +11,7 @@ from typing import List, Optional
 from datetime import datetime
 import json
 import logging
+import time
 
 # Import custom modules
 from database import init_db, get_db
@@ -76,7 +77,7 @@ async def startup_event():
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the main HTML page"""
-    with open("static/index.html", "r") as f:
+    with open("static/index.html", "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
 
 
@@ -149,7 +150,7 @@ async def start_sensitive_data_scan(
 
 @app.get("/api/scan/{scan_id}/status")
 async def get_scan_status(scan_id: int, db: Session = Depends(get_db)):
-    """Get scan status and results"""
+    """Get scan status and results with consolidated URLs"""
     scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
     
     if not scan:
@@ -158,23 +159,40 @@ async def get_scan_status(scan_id: int, db: Session = Depends(get_db)):
     # Get detections
     detections = db.query(DetectedLeak).filter(DetectedLeak.scan_id == scan_id).all()
     
+    # Consolidate detections by URL to avoid repetition
+    consolidated_results = {}
+    for d in detections:
+        url = d.file_url
+        if url not in consolidated_results:
+            consolidated_results[url] = {
+                "file_url": url,
+                "data_types": [],
+                "detections": []
+            }
+        
+        # Add data type if not already present
+        if d.data_type not in consolidated_results[url]["data_types"]:
+            consolidated_results[url]["data_types"].append(d.data_type)
+        
+        # Add detection
+        consolidated_results[url]["detections"].append({
+            "leak_id": d.leak_id,
+            "data_type": d.data_type,
+            "confidence": d.confidence,
+            "evidence": d.evidence,
+            "timestamp": d.timestamp.isoformat() if d.timestamp else None
+        })
+    
+    # Convert to list and sort by confidence
+    results_list = list(consolidated_results.values())
+    
     return {
         "scan_id": scan.scan_id,
         "status": scan.status,
         "start_time": scan.start_time.isoformat() if scan.start_time else None,
         "end_time": scan.end_time.isoformat() if scan.end_time else None,
-        "results_count": scan.results_count,
-        "detections": [
-            {
-                "leak_id": d.leak_id,
-                "data_type": d.data_type,
-                "file_url": d.file_url,
-                "confidence": d.confidence,
-                "evidence": d.evidence,
-                "timestamp": d.timestamp.isoformat() if d.timestamp else None
-            }
-            for d in detections
-        ]
+        "results_count": len(results_list),  # Count unique URLs
+        "detections": results_list
     }
 
 
@@ -224,21 +242,35 @@ def execute_sensitive_data_scan(
     try:
         logger.info(f"🔍 Starting scan {scan_id}...")
         
+        # Check if API keys are configured
+        if not settings.google_api_keys or not settings.google_search_engine_ids:
+            logger.error("❌ Google API keys not configured")
+            scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+            scan.status = "failed"
+            scan.end_time = datetime.utcnow()
+            db.commit()
+            return
+        
         # Generate dorking queries
         queries = google_search.generate_dork_queries(data_types, domain)
         logger.info(f"📋 Generated {len(queries)} search queries")
         
         all_detections = []
         processed_urls = set()
+        url_detections = {}  # Dictionary to consolidate detections by URL
         
         # Execute each query
         for query_info in queries[:max_results]:
             try:
                 query = query_info['query']
-                data_type = query_info['data_type']
+                query_data_type = query_info['data_type']
                 
-                # Search Google
-                results = google_search.search(query, num_results=5)
+                # Skip if this data type wasn't selected
+                if query_data_type not in data_types:
+                    continue
+                
+                # Search Google - fetch 10 results to get diverse URLs
+                results = google_search.search(query, num_results=10)
                 logger.info(f"🔎 Query: {query} -> {len(results)} results")
                 
                 # Process each result
@@ -251,67 +283,109 @@ def execute_sensitive_data_scan(
                     
                     processed_urls.add(url)
                     
-                    try:
-                        # Download file
-                        file_content, file_ext = doc_processor.download_file(url)
-                        
-                        # Extract text
-                        text = doc_processor.extract_text(file_content, file_ext)
-                        
-                        if not text:
-                            continue
-                        
-                        # Detect sensitive data
-                        detections = data_detector.detect_all(text)
-                        
-                        # Save detections
-                        for detected_type, matches in detections.items():
-                            for match in matches:
-                                leak = DetectedLeak(
-                                    scan_id=scan_id,
-                                    data_type=detected_type,
-                                    file_url=url,
-                                    confidence=match['confidence'],
-                                    evidence=json.dumps({
-                                        "match": match['match'],
-                                        "context": match['context']
-                                    })
-                                )
-                                db.add(leak)
-                                all_detections.append({
-                                    "data_type": detected_type,
-                                    "file_url": url,
-                                    "confidence": match['confidence'],
-                                    "evidence": match['context']
-                                })
-                        
-                        db.commit()
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Error processing {url}: {str(e)}")
-                        continue
-                
+                    # Retry logic for failed URLs
+                    max_url_retries = 2
+                    url_attempt = 0
+                    url_success = False
+                    
+                    while url_attempt < max_url_retries and not url_success:
+                        try:
+                            # Download file with timeout and error handling
+                            file_content, file_ext = doc_processor.download_file(url)
+                            
+                            # Extract text
+                            text = doc_processor.extract_text(file_content, file_ext)
+                            
+                            if not text:
+                                logger.debug(f"⚠️ No text extracted from {url}")
+                                break
+                            
+                            # Detect sensitive data - only scan for selected data types
+                            detections = data_detector.detect_all(text, selected_types=data_types)
+                            
+                            if detections:
+                                # Store consolidated detections by URL
+                                if url not in url_detections:
+                                    url_detections[url] = {
+                                        "data_types": [],
+                                        "detections": []
+                                    }
+                                
+                                # Save detections to database and consolidate results
+                                for detected_type, matches in detections.items():
+                                    if detected_type not in url_detections[url]["data_types"]:
+                                        url_detections[url]["data_types"].append(detected_type)
+                                    
+                                    for match in matches:
+                                        leak = DetectedLeak(
+                                            scan_id=scan_id,
+                                            data_type=detected_type,
+                                            file_url=url,
+                                            confidence=match['confidence'],
+                                            evidence=json.dumps({
+                                                "match": match['match'],
+                                                "context": match['context']
+                                            })
+                                        )
+                                        db.add(leak)
+                                        
+                                        url_detections[url]["detections"].append({
+                                            "data_type": detected_type,
+                                            "match": match['match'],
+                                            "confidence": match['confidence'],
+                                            "evidence": match['context']
+                                        })
+                                
+                                db.commit()
+                            
+                            url_success = True
+                            logger.info(f"✅ Successfully processed {url}")
+                            
+                        except Exception as url_error:
+                            url_attempt += 1
+                            logger.warning(f"⚠️ Error processing {url} (attempt {url_attempt}/{max_url_retries}): {str(url_error)}")
+                            
+                            if url_attempt < max_url_retries:
+                                # Wait before retry
+                                time.sleep(1)
+                            else:
+                                # Skip this URL after max retries
+                                logger.error(f"❌ Failed to process {url} after {max_url_retries} attempts. Skipping.")
+                                # Remove from processed set so we don't count failed URLs
+                                processed_urls.discard(url)
+                                continue
+                    
             except Exception as e:
                 logger.error(f"❌ Query execution failed: {str(e)}")
                 continue
+        
+        # Convert consolidated results to flat list for counting
+        for url, url_data in url_detections.items():
+            all_detections.append({
+                "file_url": url,
+                "data_types": url_data["data_types"],
+                "detection_count": len(url_data["detections"]),
+                "detections": url_data["detections"]
+            })
         
         # Update scan status
         scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
         scan.status = "completed"
         scan.end_time = datetime.utcnow()
-        scan.results_count = len(all_detections)
+        scan.results_count = len(url_detections)  # Count unique URLs with detections
         db.commit()
         
-        logger.info(f"✅ Scan {scan_id} completed. Found {len(all_detections)} detections.")
+        logger.info(f"✅ Scan {scan_id} completed. Found detections in {len(url_detections)} unique URLs.")
         
         # Send email report if requested
-        if send_email and all_detections:
+        if send_email and url_detections:
             duration = (scan.end_time - scan.start_time).total_seconds()
             scan_results = {
                 "scan_id": scan_id,
                 "duration": f"{duration:.1f} seconds",
                 "total_queries": len(queries),
-                "files_processed": len(processed_urls)
+                "files_processed": len(processed_urls),
+                "urls_with_detections": len(url_detections)
             }
             
             success = email_reporter.send_sensitive_data_report(scan_results, all_detections)
@@ -344,4 +418,10 @@ def execute_sensitive_data_scan(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=settings.host, port=settings.port, reload=settings.debug)
+    uvicorn.run(
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=False,  # Disable reload to avoid import string issues
+        log_level="info"
+    )
