@@ -5,11 +5,19 @@ const API_BASE_URL = '';
 // Module selection
 function selectModule(module) {
     const module1Section = document.getElementById('module1Section');
+    const module2Section = document.getElementById('module2Section');
+    const buttons = document.querySelectorAll('.module-button');
     
     if (module === 'module1') {
         module1Section.style.display = 'block';
-    } else {
+        module2Section.style.display = 'none';
+        buttons[0].classList.add('active');
+        buttons[1].classList.remove('active');
+    } else if (module === 'module2') {
         module1Section.style.display = 'none';
+        module2Section.style.display = 'block';
+        buttons[0].classList.remove('active');
+        buttons[1].classList.add('active');
     }
 }
 
@@ -317,3 +325,210 @@ async function deleteDetection(leakIds) {
         alert('Error deleting detection: ' + error.message);
     }
 }
+// ============ MODULE 2: PHISHING DETECTION ============
+
+// Start phishing scan
+async function startPhishingScan() {
+    try {
+        const domain = "gov.in";  // Fixed domain
+        
+        const requestData = {
+            domain: domain,
+            scan_type: "full",
+            max_domains: 100
+        };
+        
+        // Show scanning panel
+        document.getElementById('scanningPanel').style.display = 'block';
+        document.getElementById('phishingResultsPanel').style.display = 'none';
+        
+        // Send request
+        const response = await fetch('/api/scan/phishing', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestData)
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            const scanId = result.scan_id;
+            
+            // Poll for results
+            pollPhishingScanStatus(scanId);
+        } else {
+            alert('Error starting scan: ' + result.detail);
+            document.getElementById('scanningPanel').style.display = 'none';
+        }
+        
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Error starting scan: ' + error.message);
+        document.getElementById('scanningPanel').style.display = 'none';
+    }
+}
+
+// Poll phishing scan status
+let phishingPollInterval;
+function pollPhishingScanStatus(scanId) {
+    phishingPollInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/scan/${scanId}/phishing`);
+            const data = await response.json();
+            
+            // Update scanning status
+            let statusText = 'Enumerating subdomains...';
+            if (data.status === 'scanning') {
+                statusText = 'Analyzing domains for phishing...';
+            }
+            document.getElementById('scanningStatus').textContent = statusText;
+            document.getElementById('scanProgress').textContent = `${data.results_count} domains analyzed`;
+            
+            if (data.status === 'completed') {
+                clearInterval(phishingPollInterval);
+                document.getElementById('scanningStatus').textContent = '✅ Scan Complete!';
+                
+                // Show results after brief delay
+                setTimeout(() => {
+                    displayPhishingResults(data);
+                }, 1000);
+            } else if (data.status === 'failed') {
+                clearInterval(phishingPollInterval);
+                alert('Scan failed. Please check if waybackurls CLI is installed.');
+                document.getElementById('scanningPanel').style.display = 'none';
+            }
+            
+        } catch (error) {
+            console.error('Error polling status:', error);
+        }
+    }, 2000);
+}
+
+// Display phishing results
+function displayPhishingResults(data) {
+    document.getElementById('scanningPanel').style.display = 'none';
+    document.getElementById('phishingResultsPanel').style.display = 'block';
+    
+    const results = data.results || [];
+    
+    // Results summary
+    const summary = document.getElementById('phishingResultsSummary');
+    const criticalCount = results.filter(r => r.risk_level === 'CRITICAL').length;
+    const highCount = results.filter(r => r.risk_level === 'HIGH').length;
+    const mediumCount = results.filter(r => r.risk_level === 'MEDIUM').length;
+    
+    summary.innerHTML = `
+        <h4>📊 Detection Summary</h4>
+        <p><strong>Scan ID:</strong> ${data.scan_id}</p>
+        <p><strong>Total Domains Scanned:</strong> ${data.results_count}</p>
+        <div class="risk-breakdown">
+            <span class="risk-critical">🔴 Critical: ${criticalCount}</span>
+            <span class="risk-high">🟠 High: ${highCount}</span>
+            <span class="risk-medium">🟡 Medium: ${mediumCount}</span>
+        </div>
+    `;
+    
+    // Store results globally for filtering
+    window.allPhishingResults = results;
+    
+    // Display results
+    displayPhishingResultsTable(results);
+}
+
+// Display phishing results table
+function displayPhishingResultsTable(results) {
+    const tbody = document.getElementById('phishingResultsTableBody');
+    tbody.innerHTML = '';
+    
+    if (results.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px;">✅ No phishing indicators detected!</td></tr>';
+    } else {
+        results.forEach((result, index) => {
+            const riskColor = {
+                'CRITICAL': '#dc3545',
+                'HIGH': '#ff9800',
+                'MEDIUM': '#ffc107',
+                'LOW': '#28a745'
+            }[result.risk_level] || '#666';
+            
+            const indicatorsText = (result.indicators || []).slice(0, 2).join(' | ') || 'No specific indicators';
+            
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><strong>${result.domain || 'N/A'}</strong></td>
+                <td style="color: ${riskColor}; font-weight: bold;">${result.risk_level || 'N/A'}</td>
+                <td><strong>${result.phishing_percentage || 0}%</strong></td>
+                <td><small>${indicatorsText}</small></td>
+                <td><button class="btn-info" onclick="showPhishingDetails(${index})">📋 Details</button></td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+}
+
+// Show phishing details
+function showPhishingDetails(index) {
+    const result = window.allPhishingResults[index];
+    const details = `
+Domain: ${result.domain}
+Risk Level: ${result.risk_level}
+Phishing Score: ${result.phishing_percentage}%
+
+Indicators Found:
+${(result.indicators || []).map((ind, i) => `  ${i+1}. ${ind}`).join('\n')}
+
+Details:
+${JSON.stringify(result, null, 2)}
+    `;
+    alert(details);
+}
+
+// Filter phishing results
+function filterPhishingResults(level) {
+    const filterBtns = document.querySelectorAll('.filter-btn');
+    filterBtns.forEach(btn => btn.classList.remove('active'));
+    event.target.classList.add('active');
+    
+    let filtered = window.allPhishingResults;
+    if (level !== 'all') {
+        filtered = window.allPhishingResults.filter(r => r.risk_level === level);
+    }
+    
+    displayPhishingResultsTable(filtered);
+}
+
+// Export phishing results
+function exportPhishingResults() {
+    const results = window.allPhishingResults || [];
+    let csv = ['Domain,Risk Level,Phishing %,Indicators'];
+    
+    results.forEach(result => {
+        const indicators = (result.indicators || []).join('; ');
+        csv.push(`"${result.domain}","${result.risk_level}","${result.phishing_percentage}","${indicators}"`);
+    });
+    
+    const csvContent = csv.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `phishing_results_${new Date().getTime()}.csv`;
+    a.click();
+}
+
+// Reset phishing scan
+function resetPhishingScan() {
+    document.getElementById('scanningPanel').style.display = 'none';
+    document.getElementById('phishingResultsPanel').style.display = 'none';
+    window.allPhishingResults = [];
+    
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+    loadRecentScans();
+});

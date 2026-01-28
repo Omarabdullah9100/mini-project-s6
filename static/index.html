@@ -10,7 +10,7 @@
     <!-- Header -->
     <header>
         <div class="container">
-            <h1>🔒 Automated Cybersecurity Detection Framework</h1>
+            <h1>🔒 Automated Sensitive Data & Spoofing Detection Framework</h1>
             <p class="subtitle">Protecting Indian Government Digital Infrastructure</p>
         </div>
     </header>
@@ -28,11 +28,11 @@
                     <span class="status">● Active</span>
                 </button>
                 
-                <button class="module-button disabled" onclick="alert('Module 2 - Coming Soon!')">
+                <button class="module-button" onclick="selectModule('module2')">
                     <div class="icon">🕵️</div>
                     <h3>Module 2</h3>
                     <p>Phishing & Spoofed Website Detection</p>
-                    <span class="status-disabled">○ Coming Soon</span>
+                    <span class="status">● Active</span>
                 </button>
             </div>
         </section>
@@ -163,6 +163,72 @@
                     <button class="btn-secondary" onclick="exportResults()">📥 Export Results</button>
                     <button class="btn-secondary" onclick="viewFullReport()">📄 View Full Report</button>
                     <button class="btn-primary" onclick="resetScan()">🔄 New Scan</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Module 2: Phishing & Spoofing Detection -->
+        <section class="scan-section" id="module2Section" style="display: none;">
+            <h2>🕵️ Phishing & Spoofed Website Detection</h2>
+            
+            <!-- Scan Configuration -->
+            <div class="config-panel">
+                <h3>Scan Configuration</h3>
+                
+                <div class="form-group">
+                    <label for="phishingDomain">Scan Domain:</label>
+                    <input type="text" id="phishingDomain" value="gov.in" readonly disabled placeholder="gov.in" style="background-color: #f5f5f5; cursor: not-allowed;">
+                    <small>Scanning for phishing/spoofed subdomains of gov.in</small>
+                </div>
+
+                <button class="btn-primary" onclick="startPhishingScan()">
+                    🚀 Start Scanning
+                </button>
+            </div>
+
+            <!-- Scanning Animation -->
+            <div class="scanning-panel" id="scanningPanel" style="display: none;">
+                <h3>Scanning for Phishing Indicators...</h3>
+                <div class="horizontal-scanner">
+                    <div class="scanner-bar-horizontal" id="scannerBar"></div>
+                </div>
+                <div class="scanner-text">
+                    <p id="scanningStatus">Enumerating subdomains...</p>
+                    <p class="scan-progress" id="scanProgress">0 domains analyzed</p>
+                </div>
+            </div>
+
+            <!-- Results Panel -->
+            <div class="results-panel" id="phishingResultsPanel" style="display: none;">
+                <h3>🎯 Phishing Detection Results</h3>
+                <div class="results-summary" id="phishingResultsSummary"></div>
+                
+                <!-- Filter buttons -->
+                <div class="filter-buttons">
+                    <button class="filter-btn active" onclick="filterPhishingResults('all')">All Results</button>
+                    <button class="filter-btn" onclick="filterPhishingResults('CRITICAL')">🔴 Critical</button>
+                    <button class="filter-btn" onclick="filterPhishingResults('HIGH')">🟠 High</button>
+                    <button class="filter-btn" onclick="filterPhishingResults('MEDIUM')">🟡 Medium</button>
+                </div>
+
+                <div class="results-table-container">
+                    <table class="results-table" id="phishingResultsTable">
+                        <thead>
+                            <tr>
+                                <th>Domain/URL</th>
+                                <th>Risk Level</th>
+                                <th>Phishing %</th>
+                                <th>Indicators</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="phishingResultsTableBody">
+                        </tbody>
+                    </table>
+                </div>
+                <div class="action-buttons">
+                    <button class="btn-secondary" onclick="exportPhishingResults()">📥 Export Results</button>
+                    <button class="btn-primary" onclick="resetPhishingScan()">🔄 New Scan</button>
                 </div>
             </div>
         </section>

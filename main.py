@@ -21,6 +21,9 @@ from document_processor import DocumentProcessor
 from sensitive_data_detector import SensitiveDataDetector
 from email_reporter import EmailReporter
 from config import settings
+from subdomain_enumerator import SubdomainEnumerator
+from phishing_detector import PhishingDetector
+from wayback_fetcher import WaybackFetcher
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -59,6 +62,12 @@ class ScanRequest(BaseModel):
     domain: Optional[str] = 'gov.in'
     max_results: Optional[int] = 10
     send_email: Optional[bool] = True
+
+
+class PhishingScanRequest(BaseModel):
+    domain: Optional[str] = 'gov.in'
+    scan_type: Optional[str] = 'full'  # 'full', 'subdomain_only', 'url_only'
+    max_domains: Optional[int] = 50
 
 
 class ScanResponse(BaseModel):
@@ -436,6 +445,183 @@ def execute_sensitive_data_scan(
         logger.error(f"❌ Scan {scan_id} failed: {str(e)}")
         
         # Update scan status to failed
+        scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if scan:
+            scan.status = "failed"
+            scan.end_time = datetime.utcnow()
+            db.commit()
+    
+    finally:
+        db.close()
+
+
+@app.post("/api/scan/phishing", response_model=ScanResponse)
+async def start_phishing_scan(
+    request: PhishingScanRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Module 2: Start phishing detection scan
+    Scans for phishing indicators in *.gov.in domains
+    """
+    try:
+        # Create scan record (reuse Scan model for both modules)
+        scan = Scan(
+            scan_type="phishing_detection",
+            status="starting",
+            start_time=datetime.utcnow(),
+        )
+        db.add(scan)
+        db.commit()
+        scan_id = scan.scan_id
+        
+        # Add background task
+        background_tasks.add_task(
+            run_phishing_scan,
+            scan_id=scan_id,
+            domain=request.domain,
+        )
+        
+        logger.info(f"🔍 Started phishing scan {scan_id} for {request.domain}")
+        
+        return ScanResponse(
+            scan_id=scan_id,
+            status="started",
+            message=f"Phishing scan started for {request.domain}"
+        )
+    
+    except Exception as e:
+        logger.error(f"Error starting phishing scan: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/scan/{scan_id}/phishing")
+async def get_phishing_scan_status(scan_id: int, db: Session = Depends(get_db)):
+    """Get phishing scan status and results"""
+    try:
+        scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        
+        results = db.query(DetectedLeak).filter(
+            DetectedLeak.scan_id == scan_id
+        ).all()
+        
+        return {
+            "scan_id": scan_id,
+            "status": scan.status,
+            "module": "phishing_detection",
+            "start_time": scan.start_time.isoformat() if scan.start_time else None,
+            "end_time": scan.end_time.isoformat() if scan.end_time else None,
+            "results_count": len(results),
+            "results": [
+                {
+                    "domain": r.data_value,
+                    "phishing_percentage": r.confidence,
+                    "risk_level": r.data_type,  # Reusing field for risk level
+                    "detection_details": r.detection_details
+                } for r in results
+            ]
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting phishing scan status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def run_phishing_scan(
+    scan_id: int,
+    domain: str = "gov.in",
+):
+    """Background task: Run phishing detection scan"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    
+    db_engine = create_engine(settings.database_url)
+    SessionLocal = sessionmaker(bind=db_engine)
+    db = SessionLocal()
+    
+    try:
+        # Update status
+        scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        scan.status = "enumerating"
+        db.commit()
+        
+        logger.info(f"Starting enumeration for domain: {domain}")
+        
+        all_domains = set()
+        
+        # Step 1: Enumerate subdomains
+        enumerator = SubdomainEnumerator(domain)
+        subdomains = await enumerator.enumerate_all()
+        all_domains.update(subdomains)
+        logger.info(f"Enumerated {len(subdomains)} subdomains")
+        
+        # Step 2: Get Wayback URLs
+        wayback = WaybackFetcher(domain)
+        urls = await wayback.fetch_urls()
+        wayback_domains = wayback.get_unique_domains()
+        all_domains.update(wayback_domains)
+        logger.info(f"Found {len(wayback_domains)} unique domains from Wayback")
+        
+        # Limit domains to scan
+        domains_to_scan = list(all_domains)[:100]
+        logger.info(f"Scanning {len(domains_to_scan)} domains for phishing")
+        
+        # Step 3: Scan domains for phishing
+        scan.status = "scanning"
+        scan.results_count = len(domains_to_scan)
+        db.commit()
+        
+        detector = PhishingDetector(domain)
+        
+        # Scan each domain
+        for i, domain_to_check in enumerate(domains_to_scan):
+            try:
+                # Ensure URL has protocol
+                if not domain_to_check.startswith('http'):
+                    check_url = f"https://{domain_to_check}"
+                else:
+                    check_url = domain_to_check
+                
+                result = await detector.scan_domain(check_url)
+                
+                # Store result in database
+                if result.get('phishing_percentage', 0) > 0:
+                    leak = DetectedLeak(
+                        scan_id=scan_id,
+                        data_type=result['risk_level'],  # CRITICAL, HIGH, MEDIUM, LOW
+                        file_url=result['domain'],
+                        confidence=result['phishing_percentage'],
+                        evidence=json.dumps({
+                            'indicators': result['indicators'],
+                            'ssl': result['details'].get('ssl'),
+                            'redirects': result['details'].get('redirects'),
+                            'content': result['details'].get('content')
+                        })
+                    )
+                    db.add(leak)
+                    db.commit()
+                
+                logger.info(f"Progress: {i+1}/{len(domains_to_scan)} - {domain_to_check}: {result['phishing_percentage']}%")
+            
+            except Exception as e:
+                logger.error(f"Error scanning {domain_to_check}: {str(e)}")
+                continue
+        
+        # Mark scan as completed
+        scan.status = "completed"
+        scan.end_time = datetime.utcnow()
+        db.commit()
+        
+        logger.info(f"✅ Phishing scan {scan_id} completed")
+    
+    except Exception as e:
+        logger.error(f"❌ Phishing scan {scan_id} failed: {str(e)}")
         scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
         if scan:
             scan.status = "failed"
