@@ -122,12 +122,12 @@ async def start_sensitive_data_scan(
     Start a sensitive data exposure scan
     """
     try:
-        # Pre-flight: reject immediately if API keys are not configured
+        # Pre-flight: reject immediately if SerpAPI key is not configured
         api_info = validate_api_config()
         if not api_info["configured"]:
             raise HTTPException(
                 status_code=400,
-                detail="Google API keys are not configured. Copy .env.example to .env and add your keys, then restart the server."
+                detail="SerpAPI key is not configured. Set SERPAPI_KEY in .env, then restart the server."
             )
 
         # Create scan record
@@ -299,9 +299,9 @@ def execute_sensitive_data_scan(
     try:
         logger.info(f"🔍 Starting scan {scan_id}...")
         
-        # Check if API keys are configured
-        if not settings.google_api_keys or not settings.google_search_engine_ids:
-            logger.error("❌ Google API keys not configured")
+        # Check if SerpAPI key is configured
+        if not settings.serpapi_key:
+            logger.error("❌ SerpAPI key not configured")
             scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
             scan.status = "failed"
             scan.end_time = datetime.utcnow()
@@ -489,12 +489,12 @@ async def start_government_impersonation_scan(
     Primary dork: intitle:"aadhaar login" -site:gov.in
     """
     try:
-        # Pre-flight: reject immediately if API keys are not configured
+        # Pre-flight: reject immediately if SerpAPI key is not configured
         api_info = validate_api_config()
         if not api_info["configured"]:
             raise HTTPException(
                 status_code=400,
-                detail="Google API keys are not configured. Copy .env.example to .env and add your keys, then restart the server."
+                detail="SerpAPI key is not configured. Set SERPAPI_KEY in .env, then restart the server."
             )
 
         # Create scan record
