@@ -131,10 +131,7 @@ class GoogleSearchAPI:
         # Mapping of data types to specific dork queries
         dork_queries = {
             "aadhaar": [
-                f'site:{domain} ext:pdf "Aadhaar Card No" -site:uidai.gov.in -site:styandptg.py.gov.in -site:mhc.tn.gov.in -site:goaprintingpress.gov.in  -inurl:gazette',
-                f'site:{domain} ext:pdf "Aadhaar Number" -site:uidai.gov.in -site:styandptg.py.gov.in -site:mhc.tn.gov.in -site:goaprintingpress.gov.in  -inurl:gazette',
-                f'site:{domain} ext:pdf "Aadhaar No" -site:uidai.gov.in -site:styandptg.py.gov.in -site:mhc.tn.gov.in -site:goaprintingpress.gov.in  -inurl:gazette',
-                f'site:{domain} ext:pdf "Aadhaar Card No."'
+                f'site:gov.in ext:pdf "Aadhaar" -inurl:gazette'
                 ],
             
             "pan": [
