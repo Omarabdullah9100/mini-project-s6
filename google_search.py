@@ -5,6 +5,7 @@ from serpapi import GoogleSearch
 from config import settings
 import time
 import logging
+from typing import Optional, Callable
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,7 +18,14 @@ class GoogleSearchAPI:
         self.max_retries = settings.max_retries
         self.api_key = settings.serpapi_key
 
-    def search(self, query: str, num_results: int = 10, file_type: str = None, max_pages: int = 10):
+    def search(
+        self,
+        query: str,
+        num_results: int = 10,
+        file_type: str = None,
+        max_pages: int = 10,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ):
         """
         Execute Google search via SerpAPI with pagination support.
 
@@ -45,10 +53,18 @@ class GoogleSearchAPI:
         all_results = []
 
         for page in range(max_pages):
+            if should_stop and should_stop():
+                logger.info("⏹️ Search cancelled before next page request")
+                return all_results
+
             attempts = 0
             page_success = False
 
             while attempts < self.max_retries and not page_success:
+                if should_stop and should_stop():
+                    logger.info("⏹️ Search cancelled during retry loop")
+                    return all_results
+
                 try:
                     start_index = page * 10
 

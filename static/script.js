@@ -6,6 +6,26 @@ const API_BASE_URL = '';
 
 // Store scan results for recent scans access
 const scanResultsCache = {};
+let currentSensitiveScanId = null;
+let currentGidsScanId = null;
+
+function showErrorModal(context, detail) {
+    const message = detail ? `${context}: ${detail}` : context;
+    showModal('Operation Failed', message);
+}
+
+function showConfirmModalPromise(title, message) {
+    return new Promise(resolve => {
+        showConfirmModal(title, message, () => resolve(true));
+        const cancelButton = document.querySelector('#modalOverlay .btn.btn-ghost');
+        if (cancelButton) {
+            cancelButton.onclick = () => {
+                closeModal();
+                resolve(false);
+            };
+        }
+    });
+}
 
 /* ===== MODAL DIALOG FUNCTIONS ===== */
 function showModal(title, message) {
@@ -129,11 +149,12 @@ async function checkHealth() {
 /* ===================== MODULE 1: SENSITIVE DATA ===================== */
 async function startScan() {
     try {
+        resetScanPhasesState('scanPhases');
         const dataTypes = Array.from(document.querySelectorAll('input[name="dataType"]:checked')).map(cb => cb.value);
-        if (dataTypes.length === 0) { alert('Please select at least one data type'); return; }
+        if (dataTypes.length === 0) { showModal('Selection Required', 'Please select at least one data type to continue.'); return; }
 
         const fileTypes = Array.from(document.querySelectorAll('input[name="fileType"]:checked')).map(cb => cb.value);
-        if (fileTypes.length === 0) { alert('Please select at least one file type'); return; }
+        if (fileTypes.length === 0) { showModal('Selection Required', 'Please select at least one file type to continue.'); return; }
 
         const domain = document.getElementById('domain').value;
         const maxResults = parseInt(document.getElementById('maxResults').value);
@@ -144,6 +165,8 @@ async function startScan() {
         document.getElementById('resultsPanel').style.display = 'none';
         document.getElementById('progressText').textContent = 'Initializing scan...';
         document.getElementById('progressFill').style.width = '0%';
+        document.getElementById('scanStatus').textContent = 'Starting';
+        document.getElementById('stopScanBtn').disabled = false;
         startECG('ecgCanvas');
 
         const response = await fetch('/api/scan/sensitive-data', {
@@ -154,17 +177,51 @@ async function startScan() {
         const result = await response.json();
 
         if (response.ok) {
+            currentSensitiveScanId = result.scan_id;
             document.getElementById('scanId').textContent = result.scan_id;
             document.getElementById('progressText').textContent = 'Scan in progress — this may take a few minutes...';
             pollScanStatus(result.scan_id);
         } else {
-            alert('Error: ' + result.detail);
+            showErrorModal('Unable to start scan', result.detail || 'Unknown error');
             document.getElementById('progressPanel').style.display = 'none';
         }
     } catch (error) {
         console.error(error);
-        alert('Error starting scan: ' + error.message);
+        showErrorModal('Unable to start scan', error.message);
         document.getElementById('progressPanel').style.display = 'none';
+    }
+}
+
+async function stopSensitiveScan() {
+    if (!currentSensitiveScanId) {
+        showModal('No Active Scan', 'There is no active sensitive data scan to stop.');
+        return;
+    }
+
+    const confirmed = await showConfirmModalPromise(
+        'Stop Scan',
+        `Are you sure you want to stop Scan #${currentSensitiveScanId}?`
+    );
+    if (!confirmed) return;
+
+    try {
+        const response = await fetch(`/api/scan/${currentSensitiveScanId}/stop`, { method: 'POST' });
+        const result = await response.json();
+
+        if (!response.ok) {
+            showErrorModal('Unable to stop scan', result.detail || 'Unknown error');
+            return;
+        }
+
+        if (pollInterval) clearInterval(pollInterval);
+        stopECG('ecgCanvas');
+        document.getElementById('scanStatus').textContent = 'Stopped';
+        document.getElementById('progressText').textContent = 'Scan stopped by user.';
+        document.getElementById('stopScanBtn').disabled = true;
+        showModal('Scan Stopped', `Scan #${currentSensitiveScanId} was stopped successfully.`);
+        resetScan();
+    } catch (error) {
+        showErrorModal('Unable to stop scan', error.message);
     }
 }
 
@@ -187,17 +244,23 @@ function pollScanStatus(scanId) {
                 document.getElementById('progressText').textContent = 'Scan completed!';
                 document.getElementById('detectionsCount').textContent = data.results_count;
                 stopECG('ecgCanvas');
+                document.getElementById('stopScanBtn').disabled = true;
                 setTimeout(() => displayResults(data), 800);
+            } else if (data.status === 'stopped') {
+                clearInterval(pollInterval);
+                resetScan();
+                return;
             } else if (data.status === 'failed') {
                 clearInterval(pollInterval);
                 document.getElementById('progressFill').style.width = '100%';
                 document.getElementById('progressText').textContent = 'Scan finished (no results found)';
                 document.getElementById('detectionsCount').textContent = data.results_count;
                 stopECG('ecgCanvas');
+                document.getElementById('stopScanBtn').disabled = true;
                 setTimeout(() => displayResults(data), 800);
             }
         } catch (e) { console.error('Poll error:', e); }
-    }, 3000);
+    }, 1500);
 }
 
 function displayResults(data) {
@@ -273,9 +336,22 @@ function exportResults() {
 }
 
 function resetScan() {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+    stopECG('ecgCanvas');
+
     document.getElementById('progressPanel').style.display = 'none';
     document.getElementById('resultsPanel').style.display = 'none';
     document.getElementById('progressFill').style.width = '0%';
+    document.getElementById('progressText').textContent = 'Initializing scan...';
+    document.getElementById('scanId').textContent = '—';
+    document.getElementById('scanStatus').textContent = '—';
+    document.getElementById('detectionsCount').textContent = '0';
+    resetScanPhasesState('scanPhases');
+    document.getElementById('stopScanBtn').disabled = false;
+    currentSensitiveScanId = null;
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -295,16 +371,6 @@ async function loadRecentScans() {
                 
                 // Determine module type
                 let actionButton = '';
-                let scanModule = '';
-                if (scan.status === 'completed') {
-                    if (scan.scan_type.toLowerCase().includes('sensitive')) {
-                        actionButton = `<button class="btn btn-warning btn-sm" onclick="reportFromHistoryVuln(${scan.scan_id})">Send Alert</button>`;
-                        scanModule = 'module1';
-                    } else if (scan.scan_type.toLowerCase().includes('government') || scan.scan_type.toLowerCase().includes('impersonate')) {
-                        actionButton = `<button class="btn btn-danger btn-sm" onclick="reportFromHistoryAbuse(${scan.scan_id})">Send Report</button>`;
-                        scanModule = 'module2';
-                    }
-                }
                 
                 item.innerHTML = `
                     <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
@@ -341,9 +407,11 @@ function reportFromHistoryAbuse(scanId) {
 
 /* ---------- Delete Scan ---------- */
 async function deleteScan(scanId) {
-    if (!confirm(`🗑️ Are you sure you want to delete Scan #${scanId}? This action cannot be undone.`)) {
-        return;
-    }
+    const confirmed = await showConfirmModalPromise(
+        'Delete Scan',
+        `Are you sure you want to delete Scan #${scanId}? This action cannot be undone.`
+    );
+    if (!confirmed) return;
     
     try {
         console.log('🗑️ Deleting scan:', scanId);
@@ -352,14 +420,14 @@ async function deleteScan(scanId) {
         });
         
         if (response.ok) {
-            alert(`✅ Scan #${scanId} deleted successfully!`);
+            showModal('Scan Deleted', `Scan #${scanId} was deleted successfully.`);
             loadRecentScans(); // Reload the recent scans list
         } else {
             const errData = await response.json();
-            alert(`❌ Error: ${errData.detail || 'Failed to delete scan'}`);
+            showErrorModal('Unable to delete scan', errData.detail || 'Failed to delete scan');
         }
     } catch (error) {
-        alert(`❌ Error: ${error.message}`);
+        showErrorModal('Unable to delete scan', error.message);
         console.error('Delete error:', error);
     }
 }
@@ -376,7 +444,8 @@ async function viewScanDetails(scanId) {
 
 /* ---------- Delete Detection ---------- */
 async function deleteDetection(leakIds) {
-    if (!confirm('Delete this detection record?')) return;
+    const confirmed = await showConfirmModalPromise('Delete Detection', 'Are you sure you want to delete this detection record?');
+    if (!confirmed) return;
     try {
         const res = await fetch('/api/detections/delete', {
             method: 'POST',
@@ -384,14 +453,14 @@ async function deleteDetection(leakIds) {
             body: JSON.stringify({ leak_ids: leakIds.split(',').map(Number) })
         });
         if (res.ok) {
-            alert('Detection deleted.');
+            showModal('Detection Deleted', 'The detection record was deleted successfully.');
             const id = document.getElementById('scanId').textContent;
             if (id && id !== '—') viewScanDetails(parseInt(id));
         } else {
             const err = await res.json();
-            alert('Error: ' + (err.detail || 'Unknown'));
+            showErrorModal('Unable to delete detection', err.detail || 'Unknown error');
         }
-    } catch (e) { alert('Error: ' + e.message); }
+    } catch (e) { showErrorModal('Unable to delete detection', e.message); }
 }
 
 /* ---------- Checkbox Selection ---------- */
@@ -431,13 +500,13 @@ async function sendSelectedReport() {
                 
                 if (response.ok) {
                     const result = await response.json();
-                    showModal('✅ Report Sent', `Report successfully sent to CERT-In!\n\nURLs reported: ${selectedUrls.length}`);
+                    showModal('Report Submitted', `Report successfully sent to CERT-In.\n\nURLs reported: ${selectedUrls.length}`);
                 } else {
                     const err = await response.json();
-                    showModal('❌ Error', 'Error sending report: ' + (err.detail || 'Unknown error'));
+                    showErrorModal('Unable to send report', err.detail || 'Unknown error');
                 }
             } catch (error) {
-                showModal('❌ Error', 'Error: ' + error.message);
+                showErrorModal('Unable to send report', error.message);
             }
         }
     );
@@ -455,7 +524,7 @@ async function sendVulnerabilityReportFromHistory(scanId) {
         console.log('📊 Detections array:', data.detections);
         
         if (!data.detections || data.detections.length === 0) {
-            alert('❌ No detections found in this scan.');
+            showModal('No Detections', 'No detections were found for this scan.');
             return;
         }
         
@@ -475,18 +544,17 @@ async function sendVulnerabilityReportFromHistory(scanId) {
         console.log('🔍 Final extracted data types set:', Array.from(dataTypes));
         
         if (dataTypes.size === 0) {
-            alert('❌ No data types detected in results. Check scan completed successfully.');
+            showModal('No Data Types Found', 'No data types were detected in this scan result.');
             return;
         }
         
         const dataTypeArray = Array.from(dataTypes);
-        let message = '🚨 VULNERABILITY REPORT\n\nDetected Data Types:\n';
+        let message = 'Vulnerability Report\n\nDetected Data Types:\n';
         dataTypeArray.forEach(dt => message += `  • ${dt.toUpperCase()}\n`);
         message += `\nSend information disclosure vulnerability reports for these data types to CERT-In?`;
         
-        if (!confirm(message)) {
-            return;
-        }
+        const confirmed = await showConfirmModalPromise('Send Vulnerability Reports', message);
+        if (!confirmed) return;
         
         let successCount = 0;
         let failureCount = 0;
@@ -522,10 +590,10 @@ async function sendVulnerabilityReportFromHistory(scanId) {
             }
         }
         
-        alert(`📧 REPORTS SENT\\n\\n✅ Successful: ${successCount}\\n❌ Failed: ${failureCount}`);
+        showModal('Vulnerability Reports Submitted', `Successful: ${successCount}\nFailed: ${failureCount}`);
         
     } catch (error) {
-        alert('Error: ' + (error.message || 'Unknown error occurred'));
+        showErrorModal('Unable to send vulnerability reports', error.message || 'Unknown error occurred');
         console.error('💥 Top level exception:', error);
     }
 }
@@ -539,7 +607,7 @@ async function sendAbuseReportFromHistory(scanId) {
         const data = await res.json();
         
         if (!data.findings || data.findings.length === 0) {
-            alert('❌ No impersonation threats found in this scan.');
+            showModal('No Threats Found', 'No impersonation threats were found in this scan.');
             return;
         }
         
@@ -552,18 +620,17 @@ async function sendAbuseReportFromHistory(scanId) {
         });
         
         if (impersonationTypes.size === 0) {
-            alert('❌ No impersonation threats detected in results. Check scan completed successfully.');
+            showModal('No Threat Types Found', 'No impersonation threat types were identified in this scan result.');
             return;
         }
         
         const typeArray = Array.from(impersonationTypes);
-        let message = '⚠️ ABUSE REPORT - GOVERNMENT IMPERSONATION\n\nDetected Threat Types:\n';
+        let message = 'Abuse Report - Government Impersonation\n\nDetected Threat Types:\n';
         typeArray.forEach(type => message += `  • ${type.replace(/_/g, ' ').toUpperCase()}\n`);
         message += `\nSend abuse reports for detected government impersonation sites to CERT-In?`;
         
-        if (!confirm(message)) {
-            return;
-        }
+        const confirmed = await showConfirmModalPromise('Send Abuse Reports', message);
+        if (!confirmed) return;
         
         let successCount = 0;
         let failureCount = 0;
@@ -593,10 +660,10 @@ async function sendAbuseReportFromHistory(scanId) {
             }
         }
         
-        alert(`📧 REPORTS SENT\\n\\n✅ Successful: ${successCount}\\n❌ Failed: ${failureCount}`);
+        showModal('Abuse Reports Submitted', `Successful: ${successCount}\nFailed: ${failureCount}`);
         
     } catch (error) {
-        alert('Error: ' + (error.message || 'Unknown error occurred'));
+        showErrorModal('Unable to send abuse reports', error.message || 'Unknown error occurred');
     }
 }
 
@@ -668,24 +735,26 @@ async function sendVulnerabilityReport() {
                 }
             }
             
-            showModal('Reports Sent', `✅ Successful: ${successCount}\n❌ Failed: ${failureCount}\n\nAll information disclosure vulnerability reports have been submitted to CERT-In for immediate action.`);
+            showModal('Reports Submitted', `Successful: ${successCount}\nFailed: ${failureCount}\n\nInformation disclosure vulnerability reports have been submitted to CERT-In.`);
         });
     } catch (error) {
-        showModal('Error', 'Error: ' + (error.message || 'Unknown error occurred'));
+        showErrorModal('Unable to send vulnerability report', error.message || 'Unknown error occurred');
     }
 }
 
 /* ===================== MODULE 2: GIDS ===================== */
 async function startGIDSScan() {
     try {
+        resetScanPhasesState('gidsPhases');
         const types = Array.from(document.querySelectorAll('input[name="impersonationType"]:checked')).map(cb => cb.value);
-        if (!types.length) { alert('Select at least one service'); return; }
+        if (!types.length) { showModal('Selection Required', 'Please select at least one service to continue.'); return; }
 
         document.getElementById('gids-progressPanel').style.display = 'block';
         document.getElementById('gids-resultsPanel').style.display = 'none';
         document.getElementById('gids-progressText').textContent = 'Initializing scan...';
         document.getElementById('gids-progressFill').style.width = '0%';
         document.getElementById('gids-progressPercent').textContent = '0%';
+        document.getElementById('stopGidsScanBtn').disabled = false;
         startECG('ecgCanvas2');
 
         const res = await fetch('/api/scan/government-impersonation', {
@@ -695,16 +764,50 @@ async function startGIDSScan() {
         });
         const result = await res.json();
         if (res.ok) {
+            currentGidsScanId = result.scan_id;
             document.getElementById('gids-scanId').textContent = result.scan_id;
             document.getElementById('gids-progressText').textContent = 'Scanning for government impersonation sites…';
             pollGIDSScanStatus(result.scan_id);
         } else {
-            alert('Error: ' + result.detail);
+            showErrorModal('Unable to start scan', result.detail || 'Unknown error');
             document.getElementById('gids-progressPanel').style.display = 'none';
         }
     } catch (e) {
-        alert('Error: ' + e.message);
+        showErrorModal('Unable to start scan', e.message);
         document.getElementById('gids-progressPanel').style.display = 'none';
+    }
+}
+
+async function stopGIDSScan() {
+    if (!currentGidsScanId) {
+        showModal('No Active Scan', 'There is no active government impersonation scan to stop.');
+        return;
+    }
+
+    const confirmed = await showConfirmModalPromise(
+        'Stop Scan',
+        `Are you sure you want to stop Scan #${currentGidsScanId}?`
+    );
+    if (!confirmed) return;
+
+    try {
+        const response = await fetch(`/api/scan/${currentGidsScanId}/stop`, { method: 'POST' });
+        const result = await response.json();
+
+        if (!response.ok) {
+            showErrorModal('Unable to stop scan', result.detail || 'Unknown error');
+            return;
+        }
+
+        if (gidsPollInterval) clearInterval(gidsPollInterval);
+        stopECG('ecgCanvas2');
+        document.getElementById('gids-scanStatus').textContent = 'Stopped';
+        document.getElementById('gids-progressText').textContent = 'Scan stopped by user.';
+        document.getElementById('stopGidsScanBtn').disabled = true;
+        showModal('Scan Stopped', `Scan #${currentGidsScanId} was stopped successfully.`);
+        resetGIDSScan();
+    } catch (error) {
+        showErrorModal('Unable to stop scan', error.message);
     }
 }
 
@@ -729,7 +832,12 @@ function pollGIDSScanStatus(scanId) {
                 document.getElementById('gids-scanStatus').textContent = 'Completed';
                 document.getElementById('gids-findingsCount').textContent = data.results_count;
                 stopECG('ecgCanvas2');
+                document.getElementById('stopGidsScanBtn').disabled = true;
                 setTimeout(() => displayGIDSResults(data), 800);
+            } else if (data.status === 'stopped') {
+                clearInterval(gidsPollInterval);
+                resetGIDSScan();
+                return;
             } else if (data.status === 'failed') {
                 clearInterval(gidsPollInterval);
                 document.getElementById('gids-progressFill').style.width = '100%';
@@ -737,11 +845,12 @@ function pollGIDSScanStatus(scanId) {
                 document.getElementById('gids-progressText').textContent = 'Scan finished (no threats found)';
                 document.getElementById('gids-scanStatus').textContent = 'Done';
                 stopECG('ecgCanvas2');
+                document.getElementById('stopGidsScanBtn').disabled = true;
                 setTimeout(() => displayGIDSResults(data), 800);
             }
             document.getElementById('gids-findingsCount').textContent = data.results_count;
         } catch (e) { console.error(e); }
-    }, 3000);
+    }, 1500);
 }
 
 function displayGIDSResults(data) {
@@ -826,7 +935,7 @@ async function sendAbuseReport() {
     try {
         const scanId = document.getElementById('gids-scanId').textContent;
         if (!scanId || scanId === '—') {
-            alert('❌ No active scan found. Please complete a scan first.');
+            showModal('No Active Scan', 'Please complete a scan before sending an abuse report.');
             return;
         }
         
@@ -841,18 +950,17 @@ async function sendAbuseReport() {
         });
         
         if (impersonationTypes.size === 0) {
-            alert('❌ No impersonation threats detected in results. Check scan completed successfully.');
+            showModal('No Threat Types Found', 'No impersonation threats were detected in the current scan results.');
             return;
         }
         
         const typeArray = Array.from(impersonationTypes);
-        let message = '⚠️ ABUSE REPORT - GOVERNMENT IMPERSONATION\n\nDetected Threat Types:\n';
+        let message = 'Abuse Report - Government Impersonation\n\nDetected Threat Types:\n';
         typeArray.forEach(type => message += `  • ${type.replace(/_/g, ' ').toUpperCase()}\n`);
         message += `\nSend abuse reports for detected government impersonation sites to CERT-In?`;
         
-        if (!confirm(message)) {
-            return;
-        }
+        const confirmed = await showConfirmModalPromise('Send Abuse Reports', message);
+        if (!confirmed) return;
         
         let successCount = 0;
         let failureCount = 0;
@@ -883,18 +991,32 @@ async function sendAbuseReport() {
             }
         }
         
-        const message2 = `📧 ABUSE REPORTS SENT\n\n✅ Successful: ${successCount}\n❌ Failed: ${failureCount}\n\nAll government impersonation abuse reports have been submitted to CERT-In for immediate investigation and takedown action.`;
-        alert(message2);
+        const message2 = `Successful: ${successCount}\nFailed: ${failureCount}\n\nGovernment impersonation abuse reports have been submitted to CERT-In.`;
+        showModal('Abuse Reports Submitted', message2);
         
     } catch (error) {
-        alert('Error: ' + (error.message || 'Unknown error occurred'));
+        showErrorModal('Unable to send abuse reports', error.message || 'Unknown error occurred');
     }
 }
 
 function resetGIDSScan() {
+    if (gidsPollInterval) {
+        clearInterval(gidsPollInterval);
+        gidsPollInterval = null;
+    }
+    stopECG('ecgCanvas2');
+
     document.getElementById('gids-progressPanel').style.display = 'none';
     document.getElementById('gids-resultsPanel').style.display = 'none';
     document.getElementById('gids-progressFill').style.width = '0%';
+    document.getElementById('gids-progressPercent').textContent = '0%';
+    document.getElementById('gids-progressText').textContent = 'Initializing scan...';
+    document.getElementById('gids-scanId').textContent = '—';
+    document.getElementById('gids-scanStatus').textContent = 'Starting...';
+    document.getElementById('gids-findingsCount').textContent = '0';
+    resetScanPhasesState('gidsPhases');
+    document.getElementById('stopGidsScanBtn').disabled = false;
+    currentGidsScanId = null;
     window.allGIDSResults = [];
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1042,6 +1164,23 @@ function updateScanPhases(containerId, progress) {
     connectors.forEach((c, i) => { c.classList.toggle('filled', progress > thresholds[i + 1]); });
 }
 
+function resetScanPhasesState(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    const phases = container.querySelectorAll('.phase');
+    const connectors = container.querySelectorAll('.phase-connector');
+
+    phases.forEach((phase, index) => {
+        phase.classList.remove('active', 'completed');
+        if (index === 0) {
+            phase.classList.add('active');
+        }
+    });
+
+    connectors.forEach(connector => connector.classList.remove('filled'));
+}
+
 function startECG(canvasId) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
@@ -1075,7 +1214,6 @@ function startECG(canvasId) {
     let targetLevel = baseLevel;
     let currentLevel = baseLevel;
     let tick = 0;
-    let itemsScanned = 0;
     let animId;
 
     function genValue() {
@@ -1083,7 +1221,6 @@ function startECG(canvasId) {
         if (tick % 50 === 0) targetLevel = 0.15 + Math.random() * 0.65;
         currentLevel += (targetLevel - currentLevel) * 0.04;
         const noise = Math.sin(tick * 0.12) * 0.06 + Math.sin(tick * 0.05) * 0.1 + (Math.random() - 0.5) * 0.04;
-        itemsScanned += Math.floor(Math.random() * 3);
         return Math.max(0.05, Math.min(1, currentLevel + noise));
     }
 
@@ -1169,12 +1306,6 @@ function startECG(canvasId) {
         ctx.font = '600 9px Inter, system-ui, sans-serif';
         ctx.textAlign = 'left';
         ctx.fillText('SCAN ACTIVITY', 10, 15);
-
-        // Items counter
-        ctx.fillStyle = accent;
-        ctx.font = '700 11px Inter, system-ui, sans-serif';
-        ctx.textAlign = 'right';
-        ctx.fillText(itemsScanned + ' items analyzed', w - 10, 15);
 
         // Time axis
         ctx.fillStyle = labelColor;

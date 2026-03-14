@@ -6,7 +6,7 @@ Detects websites impersonating Indian government sites using Google Dorks
 import asyncio
 import json
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional, Callable
 from google_search import GoogleSearchAPI
 
 logging.basicConfig(level=logging.INFO)
@@ -51,7 +51,11 @@ class GovernmentImersonationDetector:
             }
         }
     
-    async def scan_for_impersonation(self, selected_types: List[str] = None) -> Dict:
+    async def scan_for_impersonation(
+        self,
+        selected_types: List[str] = None,
+        should_stop: Optional[Callable[[], bool]] = None
+    ) -> Dict:
         """
         Scan the web for government impersonation sites
         
@@ -68,6 +72,10 @@ class GovernmentImersonationDetector:
         total_queries = 0
         
         for impersonation_type in selected_types:
+            if should_stop and should_stop():
+                logger.info("⏹️ GIDS scan cancellation detected. Stopping further type scans.")
+                break
+
             if impersonation_type not in self.impersonation_patterns:
                 logger.warning(f"Unknown impersonation type: {impersonation_type}")
                 continue

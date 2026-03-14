@@ -12,6 +12,9 @@ from datetime import datetime
 import json
 import logging
 import time
+from threading import Lock
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import math
 
 # Import custom modules
 from database import init_db, get_db
@@ -53,6 +56,89 @@ doc_processor = DocumentProcessor()
 data_detector = SensitiveDataDetector()
 email_reporter = EmailReporter()
 gids_detector = GovernmentImersonationDetector()
+
+
+cancelled_scans = set()
+cancelled_scans_lock = Lock()
+SUPPORTED_SENSITIVE_TYPES = {"aadhaar", "pan", "voter_id", "passport"}
+SUPPORTED_IMPERSONATION_TYPES = {
+    "aadhaar_login",
+    "pan_verification",
+    "voter_registration",
+    "passport_services",
+    "license_services",
+}
+
+
+def is_scan_cancelled(scan_id: int, db: Session = None) -> bool:
+    with cancelled_scans_lock:
+        if scan_id in cancelled_scans:
+            return True
+
+    if db is not None:
+        scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if scan and scan.status == "stopped":
+            with cancelled_scans_lock:
+                cancelled_scans.add(scan_id)
+            return True
+
+    return False
+
+
+def mark_scan_cancelled(scan_id: int):
+    with cancelled_scans_lock:
+        cancelled_scans.add(scan_id)
+
+
+def clear_scan_cancelled(scan_id: int):
+    with cancelled_scans_lock:
+        cancelled_scans.discard(scan_id)
+
+
+def normalize_sensitive_types(data_types: List[str]) -> List[str]:
+    normalized = []
+    seen = set()
+    aliases = {
+        "aadhar": "aadhaar",
+        "aadhaar": "aadhaar",
+        "pan": "pan",
+        "voter": "voter_id",
+        "voter_id": "voter_id",
+        "passport": "passport",
+    }
+
+    for raw_type in data_types or []:
+        key = str(raw_type).strip().lower()
+        mapped = aliases.get(key, key)
+        if mapped in SUPPORTED_SENSITIVE_TYPES and mapped not in seen:
+            seen.add(mapped)
+            normalized.append(mapped)
+
+    return normalized
+
+
+def normalize_impersonation_types(impersonation_types: List[str]) -> List[str]:
+    normalized = []
+    seen = set()
+
+    for raw_type in impersonation_types or []:
+        key = str(raw_type).strip().lower().replace(" ", "_")
+        if key in SUPPORTED_IMPERSONATION_TYPES and key not in seen:
+            seen.add(key)
+            normalized.append(key)
+
+    return normalized
+
+
+def get_scan_detections_query(scan: Scan, db: Session):
+    query = db.query(DetectedLeak).filter(DetectedLeak.scan_id == scan.scan_id)
+
+    if scan.start_time:
+        query = query.filter(DetectedLeak.timestamp >= scan.start_time)
+    if scan.end_time:
+        query = query.filter(DetectedLeak.timestamp <= scan.end_time)
+
+    return query
 
 
 # Pydantic models for API requests
@@ -136,6 +222,10 @@ async def start_sensitive_data_scan(
     Start a sensitive data exposure scan
     """
     try:
+        normalized_data_types = normalize_sensitive_types(request.data_types)
+        if not normalized_data_types:
+            raise HTTPException(status_code=400, detail="Please select at least one valid data type")
+
         # Pre-flight: reject immediately if SerpAPI key is not configured
         api_info = validate_api_config()
         if not api_info["configured"]:
@@ -159,7 +249,7 @@ async def start_sensitive_data_scan(
             action="scan_started",
             details=json.dumps({
                 "scan_id": scan.scan_id,
-                "data_types": request.data_types,
+                "data_types": normalized_data_types,
                 "domain": request.domain
             }),
             status="success"
@@ -171,7 +261,7 @@ async def start_sensitive_data_scan(
         background_tasks.add_task(
             execute_sensitive_data_scan,
             scan.scan_id,
-            request.data_types,
+            normalized_data_types,
             request.file_types,
             request.domain,
             request.max_results
@@ -198,8 +288,8 @@ async def get_scan_status(scan_id: int, db: Session = Depends(get_db)):
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
     
-    # Get detections
-    detections = db.query(DetectedLeak).filter(DetectedLeak.scan_id == scan_id).all()
+    # Get detections only from the current scan window
+    detections = get_scan_detections_query(scan, db).all()
     
     # Consolidate detections by URL to avoid repetition
     consolidated_results = {}
@@ -281,6 +371,36 @@ async def delete_scan(scan_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error deleting scan: {str(e)}")
 
 
+@app.post("/api/scan/{scan_id}/stop")
+async def stop_scan(scan_id: int, db: Session = Depends(get_db)):
+    """Stop an in-progress scan"""
+    try:
+        scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+
+        if scan.status not in ["in_progress", "started"]:
+            raise HTTPException(status_code=400, detail=f"Scan cannot be stopped in '{scan.status}' state")
+
+        scan.status = "stopped"
+        scan.end_time = datetime.utcnow()
+        db.commit()
+        mark_scan_cancelled(scan_id)
+
+        logger.info(f"⏹️ Scan {scan_id} stopped by user")
+        return {
+            "status": "success",
+            "message": f"Scan {scan_id} has been stopped",
+            "scan_id": scan_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error stopping scan {scan_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error stopping scan: {str(e)}")
+
+
 @app.post("/api/test-email")
 async def test_email():
     """Test email configuration"""
@@ -289,7 +409,7 @@ async def test_email():
     if success:
         return {"status": "success", "message": "Test email sent successfully"}
     else:
-        raise HTTPException(status_code=500, detail="Failed to send test email")
+        raise HTTPException(status_code=500, detail=email_reporter.last_error or "Failed to send test email")
 
 
 @app.post("/api/detections/delete")
@@ -339,8 +459,7 @@ async def send_scan_report(
             raise HTTPException(status_code=404, detail="Scan not found")
         
         # Get detections for selected URLs
-        detections = db.query(DetectedLeak).filter(
-            DetectedLeak.scan_id == scan_id,
+        detections = get_scan_detections_query(scan, db).filter(
             DetectedLeak.file_url.in_(selected_urls)
         ).all()
         
@@ -360,11 +479,7 @@ async def send_scan_report(
                 "file_url": detection.file_url,
                 "data_type": detection.data_type,
                 "confidence": detection.confidence,
-                "detections": [{
-                    "match": evidence.get("match", ""),
-                    "confidence": detection.confidence,
-                    "evidence": evidence.get("context", "")
-                }]
+                "evidence": evidence.get("context", "") or evidence.get("match", "")
             })
         
         # Send the email report
@@ -391,7 +506,8 @@ async def send_scan_report(
         db.commit()
         
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to send email report")
+            error_detail = email_reporter.last_error or "Failed to send email report"
+            raise HTTPException(status_code=500, detail=error_detail)
         
         logger.info(f"📧 Sent manual report for scan {scan_id} with {len(selected_urls)} selected URL(s) to {settings.cert_in_email}")
         
@@ -421,7 +537,10 @@ async def send_vulnerability_report(
     """
     try:
         scan_id = request.scan_id
-        data_type = request.data_type
+        data_type = normalize_sensitive_types([request.data_type])
+        if not data_type:
+            raise HTTPException(status_code=400, detail="Unsupported data type for vulnerability report")
+        data_type = data_type[0]
         
         # Get scan
         scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
@@ -429,8 +548,7 @@ async def send_vulnerability_report(
             raise HTTPException(status_code=404, detail="Scan not found")
         
         # Get all detections for this data type
-        detections = db.query(DetectedLeak).filter(
-            DetectedLeak.scan_id == scan_id,
+        detections = get_scan_detections_query(scan, db).filter(
             DetectedLeak.data_type == data_type
         ).all()
         
@@ -457,7 +575,8 @@ async def send_vulnerability_report(
         success = email_reporter.send_vulnerability_report(data_type, detection_data, scan_id)
         
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to send vulnerability report")
+            error_detail = email_reporter.last_error or "Failed to send vulnerability report"
+            raise HTTPException(status_code=500, detail=error_detail)
         
         # Log the email report
         email_report = EmailReport(
@@ -503,6 +622,24 @@ def execute_sensitive_data_scan(
     
     try:
         logger.info(f"🔍 Starting scan {scan_id}...")
+        clear_scan_cancelled(scan_id)
+        selected_data_types = normalize_sensitive_types(data_types)
+        selected_file_types = [
+            str(file_type).strip().lower() for file_type in (file_types or ["pdf"]) if str(file_type).strip()
+        ]
+        if not selected_file_types:
+            selected_file_types = ["pdf"]
+
+        effective_max_results = max(1, int(max_results or 1))
+        parallel_workers = max(1, min(settings.max_parallel_url_workers, effective_max_results))
+
+        if not selected_data_types:
+            logger.error(f"❌ Scan {scan_id} has no valid selected data types")
+            scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+            scan.status = "failed"
+            scan.end_time = datetime.utcnow()
+            db.commit()
+            return
         
         # Check if SerpAPI key is configured
         if not settings.serpapi_key:
@@ -514,127 +651,173 @@ def execute_sensitive_data_scan(
             return
         
         # Generate dorking queries
-        queries = google_search.generate_dork_queries(data_types, domain)
+        queries = google_search.generate_dork_queries(selected_data_types, domain)
         logger.info(f"📋 Generated {len(queries)} search queries")
+
+        if not queries:
+            scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+            scan.status = "completed"
+            scan.end_time = datetime.utcnow()
+            scan.results_count = 0
+            db.commit()
+            return
         
-        all_detections = []
         processed_urls = set()
         url_detections = {}  # Dictionary to consolidate detections by URL
-        
-        # Execute each query
-        for query_info in queries[:max_results]:
+
+        candidate_urls = []
+
+        # Collect candidate URLs first (strictly bounded)
+        for query_info in queries:
+            if is_scan_cancelled(scan_id, db):
+                logger.info(f"⏹️ Scan {scan_id} cancellation detected. Stopping execution.")
+                break
+
             try:
                 query = query_info['query']
                 query_data_type = query_info['data_type']
                 
                 # Skip if this data type wasn't selected
-                if query_data_type not in data_types:
+                if query_data_type not in selected_data_types:
                     continue
                 
-                # Search Google with pagination - fetch up to 100 results (10 pages) per query
-                # Calculate max_pages based on remaining max_results
-                pages_needed = min(10, max(1, max_results // len(queries)))
-                results = google_search.search(query, num_results=10, max_pages=pages_needed)
+                pages_needed = min(
+                    settings.max_search_pages_per_query,
+                    max(1, math.ceil(effective_max_results / 10))
+                )
+                results = google_search.search(
+                    query,
+                    num_results=10,
+                    max_pages=pages_needed,
+                    should_stop=lambda: is_scan_cancelled(scan_id, db)
+                )
                 logger.info(f"🔎 Query: {query} -> {len(results)} results")
                 
-                # Process each result
                 for result in results:
-                    url = result['link']
+                    if is_scan_cancelled(scan_id, db):
+                        logger.info(f"⏹️ Scan {scan_id} cancellation detected while processing URLs.")
+                        break
+
+                    url = result.get('link')
+                    if not url:
+                        continue
                     
                     # Skip if already processed
                     if url in processed_urls:
                         continue
                     
                     processed_urls.add(url)
-                    
-                    # Retry logic for failed URLs
-                    max_url_retries = 2
-                    url_attempt = 0
-                    url_success = False
-                    
-                    while url_attempt < max_url_retries and not url_success:
-                        try:
-                            # Download file with timeout and error handling
-                            file_content, file_ext = doc_processor.download_file(url)
-                            
-                            # Extract text
-                            text = doc_processor.extract_text(file_content, file_ext)
-                            
-                            if not text:
-                                logger.debug(f"⚠️ No text extracted from {url}")
-                                break
-                            
-                            # Detect sensitive data - only scan for selected data types
-                            detections = data_detector.detect_all(text, selected_types=data_types)
-                            
-                            if detections:
-                                # Store consolidated detections by URL
-                                if url not in url_detections:
-                                    url_detections[url] = {
-                                        "data_types": [],
-                                        "detections": []
-                                    }
-                                
-                                # Save detections to database and consolidate results
-                                for detected_type, matches in detections.items():
-                                    if detected_type not in url_detections[url]["data_types"]:
-                                        url_detections[url]["data_types"].append(detected_type)
-                                    
-                                    for match in matches:
-                                        leak = DetectedLeak(
-                                            scan_id=scan_id,
-                                            data_type=detected_type,
-                                            file_url=url,
-                                            confidence=match['confidence'],
-                                            evidence=json.dumps({
-                                                "match": match['match'],
-                                                "context": match['context']
-                                            })
-                                        )
-                                        db.add(leak)
-                                        
-                                        url_detections[url]["detections"].append({
-                                            "data_type": detected_type,
-                                            "match": match['match'],
-                                            "confidence": match['confidence'],
-                                            "evidence": match['context']
-                                        })
-                                
-                                db.commit()
-                            
-                            url_success = True
-                            logger.info(f"✅ Successfully processed {url}")
-                            
-                        except Exception as url_error:
-                            url_attempt += 1
-                            logger.warning(f"⚠️ Error processing {url} (attempt {url_attempt}/{max_url_retries}): {str(url_error)}")
-                            
-                            if url_attempt < max_url_retries:
-                                # Wait before retry
-                                time.sleep(1)
-                            else:
-                                # Skip this URL after max retries
-                                logger.error(f"❌ Failed to process {url} after {max_url_retries} attempts. Skipping.")
-                                # Remove from processed set so we don't count failed URLs
-                                processed_urls.discard(url)
-                                continue
+
+                    candidate_urls.append((url, query_data_type))
+                    if len(candidate_urls) >= effective_max_results:
+                        break
+                
+                if len(candidate_urls) >= effective_max_results:
+                    break
                     
             except Exception as e:
                 logger.error(f"❌ Query execution failed: {str(e)}")
                 continue
-        
-        # Convert consolidated results to flat list for counting
-        for url, url_data in url_detections.items():
-            all_detections.append({
-                "file_url": url,
-                "data_types": url_data["data_types"],
-                "detection_count": len(url_data["detections"]),
-                "detections": url_data["detections"]
-            })
+
+        def process_single_url(url: str, query_data_type: str):
+            max_url_retries = 2
+
+            for url_attempt in range(max_url_retries):
+                if is_scan_cancelled(scan_id):
+                    return None
+
+                try:
+                    file_content, file_ext = doc_processor.download_file(url)
+                    if file_ext and file_ext.lower() not in selected_file_types:
+                        return None
+
+                    text = doc_processor.extract_text(file_content, file_ext)
+                    if not text:
+                        return None
+
+                    detections = data_detector.detect_all(text, selected_types=[query_data_type])
+                    matches = detections.get(query_data_type, [])
+                    if not matches:
+                        return None
+
+                    return {
+                        "url": url,
+                        "data_type": query_data_type,
+                        "matches": matches,
+                    }
+                except Exception as url_error:
+                    logger.warning(
+                        f"⚠️ Error processing {url} (attempt {url_attempt + 1}/{max_url_retries}): {str(url_error)}"
+                    )
+                    if url_attempt < max_url_retries - 1:
+                        time.sleep(0.4)
+
+            logger.error(f"❌ Failed to process {url} after {max_url_retries} attempts. Skipping.")
+            return None
+
+        # Process URLs in parallel
+        if candidate_urls and not is_scan_cancelled(scan_id, db):
+            with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+                futures = [
+                    executor.submit(process_single_url, url, query_data_type)
+                    for url, query_data_type in candidate_urls
+                ]
+
+                for future in as_completed(futures):
+                    if is_scan_cancelled(scan_id, db):
+                        for pending in futures:
+                            pending.cancel()
+                        logger.info(f"⏹️ Scan {scan_id} cancelled while processing URL workers.")
+                        break
+
+                    result = future.result()
+                    if not result:
+                        continue
+
+                    url = result["url"]
+                    detected_type = result["data_type"]
+                    matches = result["matches"]
+
+                    if url not in url_detections:
+                        url_detections[url] = {
+                            "data_types": [],
+                            "detections": []
+                        }
+
+                    if detected_type not in url_detections[url]["data_types"]:
+                        url_detections[url]["data_types"].append(detected_type)
+
+                    for match in matches:
+                        leak = DetectedLeak(
+                            scan_id=scan_id,
+                            data_type=detected_type,
+                            file_url=url,
+                            confidence=match['confidence'],
+                            evidence=json.dumps({
+                                "match": match['match'],
+                                "context": match['context']
+                            })
+                        )
+                        db.add(leak)
+
+                        url_detections[url]["detections"].append({
+                            "data_type": detected_type,
+                            "match": match['match'],
+                            "confidence": match['confidence'],
+                            "evidence": match['context']
+                        })
+
+                    db.commit()
+                    logger.info(f"✅ Successfully processed {url}")
         
         # Update scan status
+        stopped = is_scan_cancelled(scan_id, db)
+        db.expire_all()
         scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
-        scan.status = "completed"
+        if stopped:
+            scan.status = "stopped"
+        elif scan.status != "stopped":
+            scan.status = "completed"
         scan.end_time = datetime.utcnow()
         scan.results_count = len(url_detections)  # Count unique URLs with detections
         db.commit()
@@ -669,6 +852,10 @@ async def start_government_impersonation_scan(
     Primary dork: intitle:"aadhaar login" -site:gov.in
     """
     try:
+        selected_types = normalize_impersonation_types(request.impersonation_types)
+        if not selected_types:
+            raise HTTPException(status_code=400, detail="Please select at least one valid service type")
+
         # Pre-flight: reject immediately if SerpAPI key is not configured
         api_info = validate_api_config()
         if not api_info["configured"]:
@@ -692,7 +879,7 @@ async def start_government_impersonation_scan(
             action="gids_scan_started",
             details=json.dumps({
                 "scan_id": scan.scan_id,
-                "impersonation_types": request.impersonation_types
+                "impersonation_types": selected_types
             }),
             status="success"
         )
@@ -703,7 +890,7 @@ async def start_government_impersonation_scan(
         background_tasks.add_task(
             execute_government_impersonation_scan,
             scan.scan_id,
-            request.impersonation_types
+            selected_types
         )
         
         logger.info(f"✅ GIDS scan {scan.scan_id} started")
@@ -728,9 +915,7 @@ async def get_government_impersonation_scan_status(scan_id: int, db: Session = D
         if not scan:
             raise HTTPException(status_code=404, detail="Scan not found")
         
-        results = db.query(DetectedLeak).filter(
-            DetectedLeak.scan_id == scan_id
-        ).all()
+        results = get_scan_detections_query(scan, db).all()
         
         # Parse results
         findings = []
@@ -791,7 +976,11 @@ async def send_abuse_report(
     """
     try:
         scan_id = request.scan_id
-        impersonation_type = request.impersonation_type
+        normalized_types = normalize_impersonation_types([request.impersonation_type])
+        if normalized_types:
+            impersonation_type = normalized_types[0]
+        else:
+            impersonation_type = str(request.impersonation_type).strip()
         
         # Get scan
         scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
@@ -799,9 +988,8 @@ async def send_abuse_report(
             raise HTTPException(status_code=404, detail="Scan not found")
         
         # Get all findings for this impersonation type
-        findings = db.query(DetectedLeak).filter(
-            DetectedLeak.scan_id == scan_id,
-            DetectedLeak.data_type == impersonation_type
+        findings = get_scan_detections_query(scan, db).filter(
+            DetectedLeak.data_type.in_({impersonation_type, impersonation_type.replace("_", " ").title()})
         ).all()
         
         if not findings:
@@ -830,7 +1018,8 @@ async def send_abuse_report(
         success = email_reporter.send_abuse_report(impersonation_type, finding_data, scan_id)
         
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to send abuse report")
+            error_detail = email_reporter.last_error or "Failed to send abuse report"
+            raise HTTPException(status_code=500, detail=error_detail)
         
         # Log the email report
         email_report = EmailReport(
@@ -879,6 +1068,7 @@ async def execute_government_impersonation_scan(
         scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
         scan.status = "in_progress"
         db.commit()
+        clear_scan_cancelled(scan_id)
         
         logger.info(f"Starting Government Impersonation Detection System scan")
         
@@ -886,7 +1076,14 @@ async def execute_government_impersonation_scan(
             impersonation_types = ['aadhaar_login', 'pan_verification', 'voter_registration', 'passport_services', 'license_services']
         
         # Run GIDS detection
-        scan_results = await gids_detector.scan_for_impersonation(impersonation_types)
+        if is_scan_cancelled(scan_id, db):
+            logger.info(f"⏹️ GIDS scan {scan_id} cancelled before execution")
+            return
+
+        scan_results = await gids_detector.scan_for_impersonation(
+            impersonation_types,
+            should_stop=lambda: is_scan_cancelled(scan_id, db)
+        )
         
         # Store findings in database
         findings = scan_results.get("findings", [])
@@ -915,7 +1112,14 @@ async def execute_government_impersonation_scan(
                 continue
         
         # Mark scan as completed
-        scan.status = "completed"
+        stopped = is_scan_cancelled(scan_id, db)
+        db.expire_all()
+        if scan.status != "stopped":
+            scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+            if stopped:
+                scan.status = "stopped"
+            else:
+                scan.status = "completed"
         scan.end_time = datetime.utcnow()
         scan.results_count = len(findings)
         db.commit()

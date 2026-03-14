@@ -16,11 +16,11 @@ class Settings:
         self.serpapi_key: str = os.getenv("SERPAPI_KEY", "").strip()
         
         # Email Configuration
-        self.smtp_server: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+        self.smtp_server: str = os.getenv("SMTP_SERVER", "smtp.gmail.com").strip()
         self.smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
-        self.smtp_email: str = os.getenv("SMTP_EMAIL", "")
-        self.smtp_password: str = os.getenv("SMTP_PASSWORD", "")
-        self.cert_in_email: str = os.getenv("CERT_IN_EMAIL", "vdisclose@cert-in.org.in")
+        self.smtp_email: str = os.getenv("SMTP_EMAIL", "").strip()
+        self.smtp_password: str = os.getenv("SMTP_PASSWORD", "").strip().replace(" ", "")
+        self.cert_in_email: str = os.getenv("CERT_IN_EMAIL", "vdisclose@cert-in.org.in").strip()
         
         # Database Configuration
         self.database_url: str = os.getenv("DATABASE_URL", "sqlite:///./cybersecurity.db")
@@ -45,6 +45,8 @@ class Settings:
         self.max_results_per_query: int = 10
         self.max_retries: int = 3
         self.request_timeout: int = 30
+        self.max_search_pages_per_query: int = int(os.getenv("MAX_SEARCH_PAGES_PER_QUERY", "2"))
+        self.max_parallel_url_workers: int = int(os.getenv("MAX_PARALLEL_URL_WORKERS", "6"))
 
 
 # Global settings instance

@@ -2,6 +2,7 @@
 Email reporting module for sending alerts to CERT-In
 """
 import smtplib
+import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -23,6 +24,13 @@ class EmailReporter:
         self.sender_email = settings.smtp_email
         self.sender_password = settings.smtp_password
         self.cert_in_email = settings.cert_in_email
+        self.last_error = None
+
+    def _reset_error(self):
+        self.last_error = None
+
+    def _set_error(self, message: str):
+        self.last_error = message
     
     def send_sensitive_data_report(self, scan_results: Dict, detections: List[Dict]) -> bool:
         """
@@ -36,6 +44,8 @@ class EmailReporter:
             True if email sent successfully, False otherwise
         """
         try:
+            self._reset_error()
+
             # Create email
             msg = MIMEMultipart()
             msg['From'] = self.sender_email
@@ -54,6 +64,7 @@ class EmailReporter:
             return True
             
         except Exception as e:
+            self._set_error(str(e))
             logger.error(f"❌ Email sending failed: {str(e)}")
             return False
     
@@ -177,14 +188,28 @@ class EmailReporter:
     
     def _send_email(self, msg: MIMEMultipart):
         """Send email via SMTP"""
-        with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-            server.starttls()
+        if not self.sender_email or not self.sender_password:
+            raise RuntimeError("SMTP credentials are missing. Set SMTP_EMAIL and SMTP_PASSWORD in .env")
+
+        if self.smtp_port == 465:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, context=context, timeout=30) as server:
+                server.login(self.sender_email, self.sender_password)
+                server.send_message(msg)
+            return
+
+        with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30) as server:
+            server.ehlo()
+            server.starttls(context=ssl.create_default_context())
+            server.ehlo()
             server.login(self.sender_email, self.sender_password)
             server.send_message(msg)
     
     def send_test_email(self) -> bool:
         """Send a test email to verify configuration"""
         try:
+            self._reset_error()
+
             msg = MIMEMultipart()
             msg['From'] = self.sender_email
             msg['To'] = self.sender_email  # Send to self
@@ -207,6 +232,7 @@ class EmailReporter:
             return True
             
         except Exception as e:
+            self._set_error(str(e))
             logger.error(f"❌ Test email failed: {str(e)}")
             return False
     
@@ -224,6 +250,8 @@ class EmailReporter:
             True if email sent successfully, False otherwise
         """
         try:
+            self._reset_error()
+
             if not detections:
                 logger.warning(f"⚠️ No detections to report for {data_type}")
                 return False
@@ -253,6 +281,7 @@ class EmailReporter:
             return True
             
         except Exception as e:
+            self._set_error(str(e))
             logger.error(f"❌ Vulnerability report sending failed for {data_type}: {str(e)}")
             return False
     
@@ -270,6 +299,8 @@ class EmailReporter:
             True if email sent successfully, False otherwise
         """
         try:
+            self._reset_error()
+
             if not findings:
                 logger.warning(f"⚠️ No findings to report for {impersonation_type}")
                 return False
@@ -300,6 +331,7 @@ class EmailReporter:
             return True
             
         except Exception as e:
+            self._set_error(str(e))
             logger.error(f"❌ Abuse report sending failed for {impersonation_type}: {str(e)}")
             return False
     

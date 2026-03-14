@@ -114,7 +114,7 @@
                 <div class="card" id="progressPanel" style="display:none;">
                     <div class="card-header">
                         <h2 class="card-title"><span class="scan-pulse-icon"></span> Scan in Progress</h2>
-                        <span class="scan-elapsed" id="scanTimer">00:00</span>
+                        <button class="btn btn-danger btn-sm" id="stopScanBtn" onclick="stopSensitiveScan()">Stop Scan</button>
                     </div>
                     <div class="card-body">
                         <canvas id="ecgCanvas" class="scan-monitor"></canvas>
@@ -149,7 +149,7 @@
                         <div class="results-summary" id="resultsSummary"></div>
                         <div class="table-wrap">
                             <table class="data-table" id="resultsTable">
-                                <thead><tr><th><input type="checkbox" id="selectAllResults" onchange="toggleSelectAll(this)"></th><th>Data Type</th><th>File URL</th><th>Confidence</th><th>Evidence</th><th>Action</th></tr></thead>
+                                <thead><tr><th><span>Select All </span><input type="checkbox" id="selectAllResults" onchange="toggleSelectAll(this)"></th><th>Data Type</th><th>File URL</th><th>Confidence</th><th>Evidence</th><th>Action</th></tr></thead>
                                 <tbody id="resultsTableBody"></tbody>
                             </table>
                         </div>
@@ -157,10 +157,6 @@
                             <button class="btn btn-success" onclick="sendSelectedReport()">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
                                 Send Selected URLs
-                            </button>
-                            <button class="btn btn-warning" onclick="sendVulnerabilityReport()">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                                Send Vulnerability Alert
                             </button>
                             <button class="btn btn-ghost" onclick="exportResults()">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -183,7 +179,6 @@
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
                             Gov Impersonation Scan
                         </h2>
-                        <span class="badge badge-info">Dork: intitle:"aadhaar login" -site:gov.in</span>
                     </div>
                     <div class="card-body">
                         <div class="form-group">
@@ -207,7 +202,7 @@
                 <div class="card" id="gids-progressPanel" style="display:none;">
                     <div class="card-header">
                         <h2 class="card-title"><span class="scan-pulse-icon"></span> Scanning in Progress</h2>
-                        <span class="scan-elapsed" id="gids-scanTimer">00:00</span>
+                        <button class="btn btn-danger btn-sm" id="stopGidsScanBtn" onclick="stopGIDSScan()">Stop Scan</button>
                     </div>
                     <div class="card-body">
                         <canvas id="ecgCanvas2" class="scan-monitor"></canvas>
