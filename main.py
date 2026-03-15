@@ -172,6 +172,7 @@ class SendVulnerabilityReportRequest(BaseModel):
 class SendAbuseReportRequest(BaseModel):
     scan_id: int
     impersonation_type: str  # 'aadhaar_login', 'pan_verification', etc.
+    selected_domains: Optional[List[str]] = None  # Optional list of selected domains to filter results
 
 
 @app.on_event("startup")
@@ -973,9 +974,11 @@ async def send_abuse_report(
     """
     Send Abuse Report for Module 2 (Government Impersonation)
     Groups findings by impersonation type
+    Optionally filters by selected_domains if provided
     """
     try:
         scan_id = request.scan_id
+        selected_domains = request.selected_domains or []
         normalized_types = normalize_impersonation_types([request.impersonation_type])
         if normalized_types:
             impersonation_type = normalized_types[0]
@@ -991,6 +994,10 @@ async def send_abuse_report(
         findings = get_scan_detections_query(scan, db).filter(
             DetectedLeak.data_type.in_({impersonation_type, impersonation_type.replace("_", " ").title()})
         ).all()
+        
+        # Filter by selected domains if provided
+        if selected_domains:
+            findings = [f for f in findings if any(domain in f.file_url for domain in selected_domains)]
         
         if not findings:
             raise HTTPException(status_code=400, detail=f"No findings found for {impersonation_type}")
@@ -1033,7 +1040,7 @@ async def send_abuse_report(
         db.add(email_report)
         db.commit()
         
-        logger.info(f"📧 Abuse report sent for {impersonation_type} (scan {scan_id}) to {settings.cert_in_email}")
+        logger.info(f"📧 Abuse report sent for {impersonation_type} (scan {scan_id}) with {len(findings)} findings to {settings.cert_in_email}")
         
         return {
             "status": "success",

@@ -320,14 +320,28 @@ function displayResults(data) {
 }
 
 function exportResults() {
-    const table = document.getElementById('resultsTable');
-    let csv = [];
-    const headers = Array.from(table.querySelectorAll('thead th')).slice(0, 4).map(th => th.textContent);
-    csv.push(headers.join(','));
-    table.querySelectorAll('tbody tr').forEach(row => {
-        const cells = Array.from(row.querySelectorAll('td')).slice(0, 4).map(td => `"${td.textContent.replace(/"/g,'""')}"`);
-        csv.push(cells.join(','));
+    const selectedCheckboxes = document.querySelectorAll('.result-checkbox:checked');
+    
+    if (selectedCheckboxes.length === 0) {
+        showModal('No Selection', 'Please select at least one result to export');
+        return;
+    }
+    
+    let csv = ['Data Type,File URL,Confidence %,Evidence'];
+    
+    selectedCheckboxes.forEach(checkbox => {
+        const row = checkbox.closest('tr');
+        const cells = Array.from(row.querySelectorAll('td'));
+        
+        // Extract data from cells (skip checkbox column, skip action column)
+        const dataType = cells[1] ? cells[1].textContent.replace(/"/g,'""') : '';
+        const fileUrl = cells[2] ? cells[2].textContent.replace(/"/g,'""') : '';
+        const confidence = cells[3] ? cells[3].textContent.replace(/"/g,'""') : '';
+        const evidence = cells[4] ? cells[4].textContent.replace(/"/g,'""') : '';
+        
+        csv.push(`"${dataType}","${fileUrl}","${confidence}","${evidence}"`);
     });
+    
     const blob = new Blob([csv.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -891,7 +905,7 @@ function displayGIDSResultsTable(results) {
     const tbody = document.getElementById('gids-resultsTableBody');
     tbody.innerHTML = '';
     if (!results.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No government impersonation threats detected.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No government impersonation threats detected.</td></tr>';
         return;
     }
     const riskMap = { CRITICAL: 'var(--red)', HIGH: 'var(--orange)', MEDIUM: 'var(--yellow)', LOW: 'var(--green)' };
@@ -899,6 +913,7 @@ function displayGIDSResultsTable(results) {
         const row = document.createElement('tr');
         row.setAttribute('data-risk', r.risk_level);
         row.innerHTML = `
+            <td><input type="checkbox" class="gids-result-checkbox" value="${r.domain}"></td>
             <td><strong>${r.impersonation_type}</strong></td>
             <td><a href="${r.url}" target="_blank">${r.domain}</a></td>
             <td style="color:${riskMap[r.risk_level] || 'var(--text-secondary)'};font-weight:700">${r.risk_level}</td>
@@ -1019,6 +1034,120 @@ function resetGIDSScan() {
     currentGidsScanId = null;
     window.allGIDSResults = [];
     window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/* ---------- Module 2 Checkbox Selection ---------- */
+function toggleSelectAllGIDS(checkbox) {
+    const checkboxes = document.querySelectorAll('.gids-result-checkbox');
+    checkboxes.forEach(cb => cb.checked = checkbox.checked);
+}
+
+function getSelectedGIDSResults() {
+    const checkboxes = document.querySelectorAll('.gids-result-checkbox:checked');
+    const selectedDomains = Array.from(checkboxes).map(cb => cb.value);
+    
+    // Filter results to only selected ones
+    const allResults = window.allGIDSResults || [];
+    return allResults.filter(r => selectedDomains.includes(r.domain));
+}
+
+function getSelectedGIDSDomains() {
+    const checkboxes = document.querySelectorAll('.gids-result-checkbox:checked');
+    return Array.from(checkboxes).map(cb => cb.value);
+}
+
+/* ---------- Updated Module 2 Export with Selected Only ---------- */
+function exportGIDSResults() {
+    const selectedDomains = getSelectedGIDSDomains();
+    
+    if (selectedDomains.length === 0) {
+        showModal('No Selection', 'Please select at least one result to export');
+        return;
+    }
+    
+    const allResults = window.allGIDSResults || [];
+    const results = allResults.filter(r => selectedDomains.includes(r.domain));
+    
+    let csv = ['Impersonation Type,Domain,URL,Risk Level,Confidence %,Threat Details,Indicators'];
+    results.forEach(r => {
+        csv.push(`"${r.impersonation_type}","${r.domain}","${r.url}","${r.risk_level}","${r.confidence}","${r.threat_details}","${(r.indicators||[]).join('; ')}"`);
+    });
+    
+    const blob = new Blob([csv.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `gids_results_${Date.now()}.csv`;
+    a.click();
+}
+
+/* ---------- Send Selected Government Impersonation Report ---------- */
+async function sendSelectedGIDSReport() {
+    const selectedDomains = getSelectedGIDSDomains();
+    const selectedResults = getSelectedGIDSResults();
+    
+    if (selectedDomains.length === 0) {
+        showModal('No Results Selected', 'Please select at least one government impersonation threat to report');
+        return;
+    }
+    
+    // Get impersonation types from selected results
+    const impersonationTypes = new Set();
+    selectedResults.forEach(r => {
+        if (r.impersonation_type) {
+            impersonationTypes.add(r.impersonation_type);
+        }
+    });
+    
+    const typeArray = Array.from(impersonationTypes);
+    let message = `Abuse Report - Government Impersonation\n\nSelected Domains: ${selectedDomains.length}\n\nDetected Threat Types:\n`;
+    typeArray.forEach(type => message += `  • ${type.replace(/_/g, ' ').toUpperCase()}\n`);
+    message += `\nSend abuse reports for these ${selectedDomains.length} selected government impersonation site(s) to CERT-In?`;
+    
+    const confirmed = await showConfirmModalPromise('Send Selected Abuse Report', message);
+    if (!confirmed) return;
+    
+    try {
+        const scanId = document.getElementById('gids-scanId').textContent;
+        if (!scanId || scanId === '—') {
+            showModal('No Scan ID', 'Unable to retrieve scan information');
+            return;
+        }
+        
+        let successCount = 0;
+        let failureCount = 0;
+        
+        for (const type of typeArray) {
+            try {
+                const response = await fetch('/api/scan/send-abuse-report', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        scan_id: parseInt(scanId),
+                        impersonation_type: type,
+                        selected_domains: selectedDomains
+                    })
+                });
+                
+                if (response.ok) {
+                    successCount++;
+                    console.log(`✅ Abuse report sent for ${type}`);
+                } else {
+                    const errData = await response.json();
+                    failureCount++;
+                    console.error(`Failed to send abuse report for ${type}:`, errData.detail || 'Unknown error');
+                }
+            } catch (error) {
+                failureCount++;
+                console.error(`Error sending abuse report for ${type}:`, error.message);
+            }
+        }
+        
+        const message2 = `Successful: ${successCount}\nFailed: ${failureCount}\n\nGovernment impersonation abuse reports have been submitted to CERT-In for ${selectedDomains.length} selected threat(s).`;
+        showModal('Selected Abuse Reports Submitted', message2);
+        
+    } catch (error) {
+        showErrorModal('Unable to send selected abuse reports', error.message || 'Unknown error occurred');
+    }
 }
 
 /* ===================== INIT ===================== */

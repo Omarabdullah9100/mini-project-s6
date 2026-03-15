@@ -243,14 +243,14 @@
                         </div>
                         <div class="table-wrap">
                             <table class="data-table" id="gids-resultsTable">
-                                <thead><tr><th>Service</th><th>Domain</th><th>Risk</th><th>Confidence</th><th>Details</th></tr></thead>
+                                <thead><tr><th><span>Select All </span><input type="checkbox" id="selectAllGIDSResults" onchange="toggleSelectAllGIDS(this)"></th><th>Service</th><th>Domain</th><th>Risk</th><th>Confidence</th><th>Details</th></tr></thead>
                                 <tbody id="gids-resultsTableBody"></tbody>
                             </table>
                         </div>
                         <div class="btn-group">
-                            <button class="btn btn-danger" onclick="sendAbuseReport()">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
-                                Send Abuse Report
+                            <button class="btn btn-success" onclick="sendSelectedGIDSReport()">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                Send Selected Report
                             </button>
                             <button class="btn btn-ghost" onclick="exportGIDSResults()">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
