@@ -6,6 +6,7 @@ from config import settings
 import time
 import logging
 from typing import Optional, Callable
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class GoogleSearchAPI:
             search_query += f" ext:{file_type}"
 
         all_results = []
+        seen_urls = set()
 
         for page in range(max_pages):
             if should_stop and should_stop():
@@ -100,9 +102,13 @@ class GoogleSearchAPI:
                     for item in organic:
                         url = item.get("link", "")
                         if url:
+                            normalized_url = self._normalize_url(url)
+                            if normalized_url in seen_urls:
+                                continue
+                            seen_urls.add(normalized_url)
                             all_results.append({
                                 "title": item.get("title", ""),
-                                "link": url,
+                                "link": normalized_url,
                                 "snippet": item.get("snippet", ""),
                                 "file_format": item.get("file_format", ""),
                                 "mime": item.get("mime", ""),
@@ -131,7 +137,32 @@ class GoogleSearchAPI:
         logger.info(f"✅ Search completed. Total results: {len(all_results)}")
         return all_results
 
-    def generate_dork_queries(self, data_types: list, domain: str = "gov.in"):
+    def _normalize_url(self, url: str) -> str:
+        """Normalize URLs for stable deduplication across search pages."""
+        try:
+            parsed = urlparse(url.strip())
+
+            # Remove tracking query params while preserving meaningful ones.
+            tracking_keys = {
+                "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+                "gclid", "fbclid", "ref", "source"
+            }
+            filtered_query = [
+                (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                if k.lower() not in tracking_keys
+            ]
+
+            normalized = parsed._replace(
+                scheme=(parsed.scheme or "https").lower(),
+                netloc=parsed.netloc.lower(),
+                query=urlencode(filtered_query, doseq=True),
+                fragment=""
+            )
+            return urlunparse(normalized).rstrip("/")
+        except Exception:
+            return (url or "").strip().rstrip("/")
+
+    def generate_dork_queries(self, data_types: list, domain: str = "gov.in", file_types: Optional[list] = None):
         """
         Generate Google dorking queries for sensitive data detection
         
@@ -143,34 +174,46 @@ class GoogleSearchAPI:
             List of dorking queries
         """
         queries = []
+        safe_domain = (domain or "gov.in").strip() or "gov.in"
+        selected_file_types = [
+            str(file_type).strip().lower()
+            for file_type in (file_types or ["pdf"])
+            if str(file_type).strip()
+        ]
+        if not selected_file_types:
+            selected_file_types = ["pdf"]
         
         # Mapping of data types to specific dork queries
         dork_queries = {
             "aadhaar": [
-                f'site:{domain} ext:pdf "Aadhaar card no"'
-                ],
+                f'site:{safe_domain} "Aadhaar card no"',
+                f'site:{safe_domain} "Aadhaar number"',
+            ],
             
             "pan": [
-                f'site:{domain} ext:pdf "Pan Card no"'
+                f'site:{safe_domain} "Pan Card no"',
+                f'site:{safe_domain} "Permanent Account Number"',
             ],
            
             "voter_id": [
-                f'site:{domain} ext:pdf "Voter ID no"',
-                f'site:{domain} ext:pdf "EPIC no."'
+                f'site:{safe_domain} "Voter ID no"',
+                f'site:{safe_domain} "EPIC no."'
             ],
             "passport": [
-                f'site:{domain} ext:pdf "Passport No"'
+                f'site:{safe_domain} "Passport No"',
+                f'site:{safe_domain} "Passport number"',
             ]
         }
         
         for data_type in data_types:
             if data_type in dork_queries:
                 for dork in dork_queries[data_type]:
-                    queries.append({
-                        "query": dork,
-                        "data_type": data_type,
-                        "file_type": "pdf"
-                    })
+                    for file_type in selected_file_types:
+                        queries.append({
+                            "query": dork,
+                            "data_type": data_type,
+                            "file_type": file_type
+                        })
         
         logger.info(f"📋 Generated {len(queries)} dorking queries")
         return queries

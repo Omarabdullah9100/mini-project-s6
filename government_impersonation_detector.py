@@ -69,6 +69,7 @@ class GovernmentImersonationDetector:
             selected_types = list(self.impersonation_patterns.keys())
         
         all_findings = []
+        seen_finding_keys = set()
         total_queries = 0
         
         for impersonation_type in selected_types:
@@ -90,18 +91,27 @@ class GovernmentImersonationDetector:
                 results = self.google_search.search(
                     query=dork,
                     num_results=10,
-                    max_pages=3  # 30 results per type
+                    max_pages=3,  # 30 results per type
+                    should_stop=should_stop
                 )
                 
                 total_queries += 1
                 
                 for result in results:
+                    if should_stop and should_stop():
+                        logger.info("⏹️ GIDS scan cancellation detected while analyzing results.")
+                        break
+
                     finding = self._analyze_result(
                         result,
                         impersonation_type,
                         config
                     )
                     if finding:
+                        finding_key = (finding.get("domain", "").lower(), finding.get("impersonation_type", ""))
+                        if finding_key in seen_finding_keys:
+                            continue
+                        seen_finding_keys.add(finding_key)
                         all_findings.append(finding)
             
             except Exception as e:

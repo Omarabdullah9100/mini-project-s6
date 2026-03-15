@@ -233,6 +233,7 @@ function pollScanStatus(scanId) {
             const response = await fetch(`/api/scan/${scanId}/status`);
             const data = await response.json();
             document.getElementById('scanStatus').textContent = data.status;
+            document.getElementById('detectionsCount').textContent = data.results_count || 0;
 
             if (data.status === 'in_progress') {
                 progress = Math.min(progress + 10, 90);
@@ -388,7 +389,7 @@ async function loadRecentScans() {
                 
                 item.innerHTML = `
                     <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
-                        <div style="flex:1; cursor:pointer;" onclick="viewScanDetails(${scan.scan_id})">
+                        <div style="flex:1; cursor:pointer;" onclick="viewScanDetails(${scan.scan_id}, '${scan.scan_type}')">
                             <strong>Scan #${scan.scan_id}</strong>
                             <span class="scan-item-status ${statusClass}">${scan.status}</span><br>
                             <span style="color:var(--text-secondary);font-size:.85rem">${scanType} &middot; ${scan.results_count} results</span><br>
@@ -446,12 +447,22 @@ async function deleteScan(scanId) {
     }
 }
 
-async function viewScanDetails(scanId) {
+async function viewScanDetails(scanId, scanType = null) {
     try {
-        const res = await fetch(`/api/scan/${scanId}/status`);
-        const data = await res.json();
-        selectModule('module1');
-        displayResults(data);
+        const normalizedType = (scanType || '').toLowerCase();
+
+        if (normalizedType === 'government_impersonation') {
+            const res = await fetch(`/api/scan/${scanId}/government-impersonation`);
+            const data = await res.json();
+            selectModule('module2');
+            displayGIDSResults(data);
+        } else {
+            const res = await fetch(`/api/scan/${scanId}/status`);
+            const data = await res.json();
+            selectModule('module1');
+            displayResults(data);
+        }
+
         window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (e) { console.error(e); }
 }
@@ -485,7 +496,7 @@ function toggleSelectAll(checkbox) {
 
 function getSelectedUrls() {
     const checkboxes = document.querySelectorAll('.result-checkbox:checked');
-    return Array.from(checkboxes).map(cb => cb.value);
+    return Array.from(new Set(Array.from(checkboxes).map(cb => cb.value).filter(Boolean)));
 }
 
 /* ---------- Send Selected Results Report ---------- */
@@ -1053,7 +1064,7 @@ function getSelectedGIDSResults() {
 
 function getSelectedGIDSDomains() {
     const checkboxes = document.querySelectorAll('.gids-result-checkbox:checked');
-    return Array.from(checkboxes).map(cb => cb.value);
+    return Array.from(new Set(Array.from(checkboxes).map(cb => cb.value).filter(Boolean)));
 }
 
 /* ---------- Updated Module 2 Export with Selected Only ---------- */

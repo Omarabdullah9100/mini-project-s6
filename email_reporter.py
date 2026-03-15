@@ -70,7 +70,7 @@ class EmailReporter:
     
     def _create_sensitive_data_email_body(self, scan_results: Dict, detections: List[Dict]) -> str:
         """Create HTML email body for sensitive data report"""
-        
+
         # Group detections by data type
         grouped = {}
         for detection in detections:
@@ -78,112 +78,179 @@ class EmailReporter:
             if data_type not in grouped:
                 grouped[data_type] = []
             grouped[data_type].append(detection)
-        
+
         # Calculate statistics
         total_files = len(set(d['file_url'] for d in detections))
         total_detections = len(detections)
         avg_confidence = sum(d['confidence'] for d in detections) / len(detections) if detections else 0
-        
-        html = f"""
-        <html>
-        <head>
-            <style>
-                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-                .header {{ background-color: #d32f2f; color: white; padding: 20px; }}
-                .content {{ padding: 20px; }}
-                .alert {{ background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }}
-                .stats {{ background-color: #f5f5f5; padding: 15px; margin: 20px 0; }}
-                .detection {{ background-color: #ffffff; border: 1px solid #ddd; padding: 10px; margin: 10px 0; }}
-                table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
-                th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-                th {{ background-color: #f5f5f5; font-weight: bold; }}
-                .high-confidence {{ color: #d32f2f; font-weight: bold; }}
-                .medium-confidence {{ color: #ff9800; }}
-                .footer {{ background-color: #f5f5f5; padding: 20px; margin-top: 30px; font-size: 12px; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>🚨 URGENT: Sensitive Data Exposure Detected</h1>
-                <p>Automated Security Scan Report - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            </div>
-            
-            <div class="content">
-                <div class="alert">
-                    <strong>⚠️ CRITICAL SECURITY INCIDENT</strong><br>
-                    Our automated scanning system has detected sensitive personal data publicly exposed on Indian government (.gov.in) domains.
-                    Immediate action is required to protect citizen privacy and prevent potential misuse.
-                </div>
-                
-                <div class="stats">
-                    <h2>📊 Executive Summary</h2>
-                    <ul>
-                        <li><strong>Total Files Affected:</strong> {total_files}</li>
-                        <li><strong>Total Data Instances Detected:</strong> {total_detections}</li>
-                        <li><strong>Average Confidence Score:</strong> {avg_confidence:.1f}%</li>
-                        <li><strong>Scan Duration:</strong> {scan_results.get('duration', 'N/A')}</li>
-                        <li><strong>Detection Method:</strong> Automated Google Dorking + Pattern Matching</li>
-                    </ul>
-                </div>
-                
-                <h2>🔍 Detailed Findings</h2>
-        """
-        
-        # Add detections grouped by type
+        report_date = datetime.now().strftime('%d %B %Y, %H:%M UTC')
+        scan_id = scan_results.get('scan_id', 'N/A')
+
+        # Build per-type findings rows
+        findings_html = ''
         for data_type, items in grouped.items():
             data_type_name = data_type.replace('_', ' ').title()
-            html += f"""
-                <h3>📌 {data_type_name} ({len(items)} instances)</h3>
-                <table>
-                    <tr>
-                        <th>File URL</th>
-                        <th>Confidence</th>
-                        <th>Evidence (Anonymized)</th>
-                    </tr>
-            """
-            
-            for item in items[:10]:  # Limit to first 10 per type
-                confidence_class = "high-confidence" if item['confidence'] >= 80 else "medium-confidence"
-                html += f"""
-                    <tr>
-                        <td><a href="{item['file_url']}">{item['file_url'][:80]}...</a></td>
-                        <td class="{confidence_class}">{item['confidence']:.1f}%</td>
-                        <td>{item['evidence'][:100]}...</td>
-                    </tr>
-                """
-            
+            badge_color = '#ff4d6a' if data_type == 'aadhaar' else '#ff9f43' if data_type == 'pan' else '#339af0' if data_type == 'voter_id' else '#c084fc'
+            findings_html += f'''
+            <tr>
+              <td colspan="3" style="background:#1c1f2e;padding:10px 16px 6px;">
+                <span style="display:inline-block;background:{badge_color}22;color:{badge_color};border:1px solid {badge_color}44;
+                      font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;letter-spacing:.5px;">
+                  {data_type_name.upper()}
+                </span>
+              </td>
+            </tr>'''
+            for item in items[:10]:
+                conf = item['confidence']
+                conf_color = '#ff4d6a' if conf >= 80 else '#ff9f43' if conf >= 60 else '#51cf66'
+                url_display = item['file_url'][:70] + ('…' if len(item['file_url']) > 70 else '')
+                evidence_display = str(item.get('evidence', ''))[:90] + '…'
+                findings_html += f'''
+            <tr style="border-bottom:1px solid #2a2d3e;">
+              <td style="padding:10px 16px;color:#8b8fa7;font-size:12px;word-break:break-all;max-width:340px;">
+                <a href="{item['file_url']}" style="color:#00d4aa;text-decoration:none;">{url_display}</a>
+              </td>
+              <td style="padding:10px 16px;white-space:nowrap;">
+                <span style="color:{conf_color};font-weight:700;font-size:13px;">{conf:.0f}%</span>
+              </td>
+              <td style="padding:10px 16px;color:#8b8fa7;font-size:12px;">{evidence_display}</td>
+            </tr>'''
             if len(items) > 10:
-                html += f"<tr><td colspan='3'><em>... and {len(items) - 10} more instances</em></td></tr>"
-            
-            html += "</table>"
-        
-        # Add recommendations
-        html += """
-                <h2>✅ Recommended Actions</h2>
-                <ol>
-                    <li><strong>Immediate:</strong> Take down or restrict access to affected files</li>
-                    <li><strong>Short-term:</strong> Notify affected individuals and organizations</li>
-                    <li><strong>Long-term:</strong> Implement automated scanning and data protection policies</li>
-                    <li><strong>Prevention:</strong> Conduct security awareness training for content publishers</li>
-                </ol>
-                
-                <div class="alert">
-                    <strong>⏰ URGENCY LEVEL: HIGH</strong><br>
-                    This data is currently indexed by search engines and publicly accessible. 
-                    Immediate remediation is critical to prevent identity theft and fraud.
-                </div>
-            </div>
-            
-            <div class="footer">
-                <p><strong>Report Generated By:</strong> Automated Sensitive Data & Spoofing Detection Framework</p>
-                <p><strong>Detection Methodology:</strong> Google Custom Search API + Multi-stage Pattern Validation</p>
-                <p><strong>Compliance:</strong> Responsible Disclosure Guidelines, Indian Cybersecurity Laws</p>
-                <p><em>This is an automated report. For questions or clarifications, please contact the system administrator.</em></p>
-            </div>
-        </body>
-        </html>
-        """
-        
+                findings_html += f'''
+            <tr><td colspan="3" style="padding:8px 16px;color:#5c6078;font-size:12px;font-style:italic;">
+              + {len(items) - 10} more {data_type_name} instances detected
+            </td></tr>'''
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CyberShield Security Alert</title>
+</head>
+<body style="margin:0;padding:0;background:#0d0f1a;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;color:#e2e4ed;">
+
+<!-- Wrapper -->
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#0d0f1a;padding:32px 16px;">
+<tr><td align="center">
+<table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%">
+
+  <!-- Header -->
+  <tr>
+    <td style="background:linear-gradient(135deg,#0d1f1b 0%,#0a1628 100%);border:1px solid #00d4aa44;
+               border-radius:12px 12px 0 0;padding:32px 36px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="vertical-align:top;">
+            <h1 style="margin:0 0 6px;font-size:22px;font-weight:800;color:#e2e4ed;line-height:1.2;">
+              Sensitive Data Exposure Detected
+            </h1>
+            <p style="margin:0;font-size:12px;color:#5c6078;">{report_date} &nbsp;&#8226;&nbsp; Scan ID: {scan_id}</p>
+          </td>
+          <td align="right" valign="top">
+            <span style="display:inline-block;background:#ff4d6a18;color:#ff4d6a;border:1px solid #ff4d6a44;
+                         font-size:10px;font-weight:700;padding:4px 12px;border-radius:20px;letter-spacing:1px;">CRITICAL</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Red Alert Banner -->
+  <tr>
+    <td style="background:#ff4d6a18;border-left:4px solid #ff4d6a;border-right:1px solid #2a2d3e;
+               border-bottom:1px solid #2a2d3e;padding:14px 36px;">
+      <p style="margin:0;font-size:13px;font-weight:600;color:#ff4d6a;">CRITICAL SECURITY INCIDENT</p>
+      <p style="margin:4px 0 0;font-size:12px;color:#8b8fa7;">Sensitive personal data has been found publicly exposed on Indian Government (.gov.in) domains. Immediate remediation is required to safeguard citizen privacy.</p>
+    </td>
+  </tr>
+
+  <!-- Stats Row -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:24px 36px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td align="center" style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:8px;padding:16px;width:30%;">
+            <p style="margin:0;font-size:26px;font-weight:800;color:#ff4d6a;">{total_files}</p>
+            <p style="margin:4px 0 0;font-size:11px;color:#5c6078;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Files Affected</p>
+          </td>
+          <td width="16"></td>
+          <td align="center" style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:8px;padding:16px;width:30%;">
+            <p style="margin:0;font-size:26px;font-weight:800;color:#ff9f43;">{total_detections}</p>
+            <p style="margin:4px 0 0;font-size:11px;color:#5c6078;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Data Instances</p>
+          </td>
+          <td width="16"></td>
+          <td align="center" style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:8px;padding:16px;width:30%;">
+            <p style="margin:0;font-size:26px;font-weight:800;color:#00d4aa;">{avg_confidence:.0f}%</p>
+            <p style="margin:4px 0 0;font-size:11px;color:#5c6078;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Avg Confidence</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Section: Detailed Findings -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:0 36px 8px;">
+      <p style="margin:0 0 12px;font-size:11px;font-weight:700;color:#00d4aa;letter-spacing:2px;text-transform:uppercase;
+                border-top:1px solid #2a2d3e;padding-top:20px;">
+        Detailed Findings
+      </p>
+      <table width="100%" cellpadding="0" cellspacing="0"
+             style="border:1px solid #2a2d3e;border-radius:8px;overflow:hidden;font-size:12px;">
+        <tr style="background:#1c1f2e;">
+          <th style="padding:10px 16px;text-align:left;color:#5c6078;font-size:11px;font-weight:600;
+                     letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid #2a2d3e;">File URL</th>
+          <th style="padding:10px 16px;text-align:left;color:#5c6078;font-size:11px;font-weight:600;
+                     letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid #2a2d3e;white-space:nowrap;">Confidence</th>
+          <th style="padding:10px 16px;text-align:left;color:#5c6078;font-size:11px;font-weight:600;
+                     letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid #2a2d3e;">Evidence</th>
+        </tr>
+        {findings_html}
+      </table>
+    </td>
+  </tr>
+
+  <!-- Section: Recommended Actions -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:20px 36px 8px;">
+      <p style="margin:0 0 12px;font-size:11px;font-weight:700;color:#00d4aa;letter-spacing:2px;text-transform:uppercase;
+                border-top:1px solid #2a2d3e;padding-top:20px;">
+        Recommended Actions
+      </p>
+      <table cellpadding="0" cellspacing="0" width="100%">
+        <tr>
+          <td style="background:#1c1f2e;border:1px solid #2a2d3e;border-left:3px solid #ff4d6a;
+                     border-radius:6px;padding:12px 16px;margin-bottom:8px;display:block;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#ff4d6a;">URGENT &mdash; 0–2 hours</p>
+            <p style="margin:0;font-size:12px;color:#8b8fa7;">Remove or restrict access to the affected files immediately. Assess the full scope of exposure.</p>
+          </td>
+        </tr>
+        <tr><td height="8"></td></tr>
+        <tr>
+          <td style="background:#1c1f2e;border:1px solid #2a2d3e;border-left:3px solid #ff9f43;
+                     border-radius:6px;padding:12px 16px;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#ff9f43;">HIGH PRIORITY &mdash; 2–24 hours</p>
+            <p style="margin:0;font-size:12px;color:#8b8fa7;">Notify affected individuals. Conduct forensic analysis to determine data exposure timeline.</p>
+          </td>
+        </tr>
+        <tr><td height="8"></td></tr>
+        <tr>
+          <td style="background:#1c1f2e;border:1px solid #2a2d3e;border-left:3px solid #00d4aa;
+                     border-radius:6px;padding:12px 16px;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#00d4aa;">FOLLOW-UP &mdash; 1–7 days</p>
+            <p style="margin:0;font-size:12px;color:#8b8fa7;">Issue formal incident report, coordinate with law enforcement if required, implement preventive measures and publish policies.</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+
+</body>
+</html>"""
+
         return html
     
     def _send_email(self, msg: MIMEMultipart):
@@ -213,24 +280,44 @@ class EmailReporter:
             msg = MIMEMultipart()
             msg['From'] = self.sender_email
             msg['To'] = self.sender_email  # Send to self
-            msg['Subject'] = "Test Email - Cybersecurity Detection Framework"
-            
-            body = """
-            <html>
-            <body>
-                <h2>✅ Email Configuration Test</h2>
-                <p>This is a test email from the Automated Sensitive Data & Spoofing Detection Framework.</p>
-                <p>If you received this email, your SMTP configuration is working correctly.</p>
-            </body>
-            </html>
-            """
-            
+            msg['Subject'] = "[CyberShield] Email Configuration Verified"
+
+            report_date = datetime.now().strftime('%d %B %Y, %H:%M UTC')
+            body = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>CyberShield — Test Email</title></head>
+<body style="margin:0;padding:0;background:#0d0f1a;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;color:#e2e4ed;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#0d0f1a;padding:32px 16px;">
+<tr><td align="center">
+<table width="580" cellpadding="0" cellspacing="0" style="max-width:580px;width:100%;">
+  <tr>
+    <td style="background:linear-gradient(135deg,#0d1f1b 0%,#0a1628 100%);border:1px solid #00d4aa44;
+               border-radius:12px 12px 0 0;padding:28px 32px;">
+      <h1 style="margin:0;font-size:20px;font-weight:800;color:#e2e4ed;">Email Configuration Verified</h1>
+      <p style="margin:6px 0 0;font-size:12px;color:#5c6078;">{report_date}</p>
+    </td>
+  </tr>
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:28px 32px;">
+      <p style="margin:0 0 8px;font-size:14px;font-weight:700;color:#51cf66;">SMTP Connection Successful</p>
+      <p style="margin:0;font-size:13px;color:#8b8fa7;line-height:1.6;">
+        Your email configuration is working correctly.<br>
+        The Automated Sensitive Data &amp; Spoofing Detection Framework is ready to deliver security alerts.
+      </p>
+    </td>
+  </tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>"""
+
             msg.attach(MIMEText(body, 'html'))
             self._send_email(msg)
-            
+
             logger.info("✅ Test email sent successfully!")
             return True
-            
+
         except Exception as e:
             self._set_error(str(e))
             logger.error(f"❌ Test email failed: {str(e)}")
@@ -287,7 +374,7 @@ class EmailReporter:
     
     def send_abuse_report(self, impersonation_type: str, findings: List[Dict], scan_id: int = None) -> bool:
         """
-        Send Abuse Report for Government Impersonation to CERT-In
+      Send spoofing website report for impersonation to CERT-In
         Groups findings by impersonation type for Module 2
         
         Args:
@@ -318,7 +405,7 @@ class EmailReporter:
                 'license_services': 'Fraudulent License Services Portal'
             }.get(impersonation_type, impersonation_type.replace('_', ' ').title())
             
-            msg['Subject'] = f"[ABUSE REPORT] Government Impersonation - {impersonation_display} - {datetime.now().strftime('%Y-%m-%d')}"
+            msg['Subject'] = f"[SPOOFING ALERT] Government Website Spoofing Detected - {impersonation_display} - {datetime.now().strftime('%Y-%m-%d')}"
             
             # Create HTML email body
             body = self._create_abuse_email_body(impersonation_type, findings, scan_id)
@@ -337,80 +424,23 @@ class EmailReporter:
     
     def _create_vulnerability_email_body(self, data_type: str, detections: List[Dict], scan_id: int = None) -> str:
         """Create HTML email body for vulnerability report (Module 1)"""
-        
+
         data_type_display = {
             'aadhaar': 'Aadhaar Numbers',
             'pan': 'PAN Cards',
             'voter_id': 'Voter ID Numbers',
             'passport': 'Passport Numbers'
         }.get(data_type, data_type.replace('_', ' ').title())
-        
+
+        dt_badge_color = {
+            'aadhaar': '#ff4d6a', 'pan': '#ff9f43', 'voter_id': '#339af0', 'passport': '#c084fc'
+        }.get(data_type, '#00d4aa')
+
         unique_urls = len(set(d.get('file_url', '') for d in detections))
         total_instances = len(detections)
         avg_confidence = sum(d.get('confidence', 0) for d in detections) / len(detections) if detections else 0
-        
-        html = f"""
-        <html>
-        <head>
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; }}
-                .header {{ background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white; padding: 25px; margin-bottom: 20px; }}
-                .content {{ padding: 0 20px 20px 20px; }}
-                .alert {{ background-color: #ffebee; border-left: 5px solid #d32f2f; padding: 15px; margin: 20px 0; }}
-                .severity {{ background-color: #fff3e0; border-left: 5px solid #ff9800; padding: 15px; margin: 20px 0; }}
-                .stats {{ background-color: #f5f5f5; padding: 15px; margin: 20px 0; border-radius: 5px; }}
-                table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
-                th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-                th {{ background-color: #d32f2f; color: white; font-weight: bold; }}
-                tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                .footer {{ background-color: #f5f5f5; padding: 15px; margin-top: 30px; font-size: 11px; border-radius: 5px; }}
-                .high {{ color: #d32f2f; font-weight: bold; }}
-                h1 {{ margin: 0; }}
-                h2 {{ color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 10px; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>🚨 INFORMATION DISCLOSURE VULNERABILITY REPORT</h1>
-                <p style="margin: 10px 0 0 0;">Critical Security Incident - {data_type_display} Exposure</p>
-                <p style="margin: 5px 0 0 0; font-size: 12px;">Report Generated: {datetime.now().strftime('%A, %B %d, %Y at %H:%M:%S')}</p>
-            </div>
-            
-            <div class="content">
-                <div class="alert">
-                    <strong>⚠️ CRITICAL - IMMEDIATE ACTION REQUIRED</strong><br>
-                    {data_type_display} have been discovered publicly accessible on Indian Government (.gov.in) websites.
-                    This represents a severe information disclosure vulnerability affecting citizen privacy and security.
-                </div>
-                
-                <div class="severity">
-                    <strong>⏰ Severity Level: CRITICAL</strong><br>
-                    Vulnerability Type: Information Disclosure (CWE-200)<br>
-                    Impact: Privacy Breach, Identity Theft Risk, Fraud Potential<br>
-                    Affected Entities: Citizens of India
-                </div>
-                
-                <h2>📊 Vulnerability Summary</h2>
-                <div class="stats">
-                    <ul style="margin: 0;">
-                        <li><strong>Data Type:</strong> {data_type_display}</li>
-                        <li><strong>Unique Affected URLs:</strong> {unique_urls}</li>
-                        <li><strong>Total Instances Found:</strong> {total_instances}</li>
-                        <li><strong>Detection Confidence:</strong> {avg_confidence:.1f}%</li>
-                        {f'<li><strong>Scan ID:</strong> {scan_id}</li>' if scan_id else ''}
-                        <li><strong>Detection Method:</strong> Automated Vulnerability Scanning + Pattern Analysis</li>
-                    </ul>
-                </div>
-                
-                <h2>🔍 Affected Resources</h2>
-                <table>
-                    <tr>
-                        <th>Government Website URL</th>
-                        <th>Detection Confidence</th>
-                        <th>Instances Found</th>
-                    </tr>
-        """
-        
+        report_date = datetime.now().strftime('%d %B %Y, %H:%M UTC')
+
         # Group by URL
         url_groups = {}
         for detection in detections:
@@ -419,78 +449,168 @@ class EmailReporter:
                 url_groups[url] = {'count': 0, 'confidences': []}
             url_groups[url]['count'] += 1
             url_groups[url]['confidences'].append(detection.get('confidence', 0))
-        
-        # Add URLs to table
-        for url, info in list(url_groups.items())[:15]:  # Limit to 15 URLs
+
+        url_rows = ''
+        for url, info in list(url_groups.items())[:15]:
             avg_conf = sum(info['confidences']) / len(info['confidences']) if info['confidences'] else 0
-            conf_color = '#d32f2f' if avg_conf >= 80 else '#ff9800'
-            html += f"""
-                    <tr>
-                        <td><a href="{url}" style="color: #1976d2; text-decoration: none;">{url[:70]}...</a></td>
-                        <td style="color: {conf_color}; font-weight: bold;">{avg_conf:.1f}%</td>
-                        <td>{info['count']}</td>
-                    </tr>
-            """
-        
+            conf_color = '#ff4d6a' if avg_conf >= 80 else '#ff9f43' if avg_conf >= 60 else '#51cf66'
+            url_display = url[:68] + ('…' if len(url) > 68 else '')
+            url_rows += f'''
+            <tr style="border-bottom:1px solid #2a2d3e;">
+              <td style="padding:10px 16px;font-size:12px;word-break:break-all;max-width:360px;">
+                <a href="{url}" style="color:#00d4aa;text-decoration:none;">{url_display}</a>
+              </td>
+              <td style="padding:10px 16px;white-space:nowrap;">
+                <span style="color:{conf_color};font-weight:700;font-size:13px;">{avg_conf:.0f}%</span>
+              </td>
+              <td style="padding:10px 16px;text-align:center;color:#e2e4ed;font-size:13px;font-weight:600;">{info["count"]}</td>
+            </tr>'''
         if len(url_groups) > 15:
-            html += f"""
-                    <tr>
-                        <td colspan="3" style="text-align: center; font-style: italic;">
-                            ... and {len(url_groups) - 15} additional affected URLs (see attached report for complete list)
-                        </td>
-                    </tr>
-            """
-        
-        html += """
-                </table>
-                
-                <h2>🛡️ Recommended Immediate Actions</h2>
-                <ol style="padding-left: 20px;">
-                    <li><strong>URGENT (0-2 hours):</strong>
-                        <ul>
-                            <li>Remove or restrict access to the affected files immediately</li>
-                            <li>Verify the integrity of the exposed data</li>
-                            <li>Begin preparation of public disclosure statement</li>
-                        </ul>
-                    </li>
-                    <li><strong>HIGH PRIORITY (2-24 hours):</strong>
-                        <ul>
-                            <li>Conduct forensic analysis to determine exposure timeline</li>
-                            <li>Notify affected individuals through official channels</li>
-                            <li>Implement emergency access controls</li>
-                        </ul>
-                    </li>
-                    <li><strong>CRITICAL FOLLOW-UP (1-7 days):</strong>
-                        <ul>
-                            <li>Issue formal incident response report</li>
-                            <li>Coordinate with law enforcement if necessary</li>
-                            <li>Implement preventive measures to prevent recurrence</li>
-                        </ul>
-                    </li>
-                </ol>
-                
-                <h2>📋 Technical Details</h2>
-                <p><strong>Vulnerability Class:</strong> CWE-200: Exposure of Sensitive Information to an Unauthorized Actor</p>
-                <p><strong>Attack Vector:</strong> Network/Public Search Engines</p>
-                <p><strong>Exploitability:</strong> High (freely accessible via Google Search)</p>
-                <p><strong>Detection Confidence:</strong> {avg_confidence:.1f}% (Pattern-based + Machine Learning)</p>
-            </div>
-            
-            <div class="footer">
-                <p><strong>Report Generated By:</strong> Automated Sensitive Data & Spoofing Detection Framework v2.0</p>
-                <p><strong>Reporting Organization:</strong> Cybersecurity Detection System</p>
-                <p><strong>Compliance:</strong> Indian Computer Misuse and Cybersecurity Laws, Responsible Disclosure</p>
-                <p><em>This is an automated security report. All findings have been validated. For assistance or questions, contact the reporting system administrator.</em></p>
-            </div>
-        </body>
-        </html>
-        """
-        
+            url_rows += f'''
+            <tr><td colspan="3" style="padding:8px 16px;color:#5c6078;font-size:12px;font-style:italic;text-align:center;">
+              + {len(url_groups) - 15} additional affected URLs
+            </td></tr>'''
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>CyberShield — Vulnerability Report</title></head>
+<body style="margin:0;padding:0;background:#0d0f1a;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;color:#e2e4ed;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#0d0f1a;padding:32px 16px;">
+<tr><td align="center">
+<table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;">
+
+  <!-- Header -->
+  <tr>
+    <td style="background:linear-gradient(135deg,#0d1f1b 0%,#0a1628 100%);border:1px solid #00d4aa44;
+               border-radius:12px 12px 0 0;padding:32px 36px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="vertical-align:top;">
+            <h1 style="margin:0 0 4px;font-size:21px;font-weight:800;color:#e2e4ed;line-height:1.2;">
+              Sensitive Data Exposure Detected
+            </h1>
+            <p style="margin:0;font-size:12px;color:#5c6078;">{report_date}{f' &nbsp;&#8226;&nbsp; Scan ID: {scan_id}' if scan_id else ''}</p>
+          </td>
+          <td align="right" valign="top">
+            <span style="display:inline-block;background:{dt_badge_color}18;color:{dt_badge_color};border:1px solid {dt_badge_color}44;
+                         font-size:10px;font-weight:700;padding:4px 12px;border-radius:20px;letter-spacing:1px;">CRITICAL</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Alert Banner -->
+  <tr>
+    <td style="background:#ff4d6a14;border-left:4px solid #ff4d6a;border-right:1px solid #2a2d3e;
+               border-bottom:1px solid #2a2d3e;padding:14px 36px;">
+      <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#ff4d6a;">IMMEDIATE ACTION REQUIRED</p>
+      <p style="margin:0;font-size:12px;color:#8b8fa7;">{data_type_display} have been found publicly accessible on Indian Government (.gov.in) websites — a severe CWE-200 Information Disclosure vulnerability with direct risk of identity theft and financial fraud.</p>
+    </td>
+  </tr>
+
+  <!-- Severity Meta -->
+  <tr>
+    <td style="background:#ff9f4314;border-left:4px solid #ff9f43;border-right:1px solid #2a2d3e;
+               border-bottom:1px solid #2a2d3e;padding:12px 36px;">
+      <table cellpadding="0" cellspacing="6" style="font-size:12px;color:#8b8fa7;">
+        <tr>
+          <td style="padding-right:24px;"><span style="color:#ff9f43;font-weight:700;">Vulnerability Class</span><br>CWE-200: Exposure of Sensitive Information</td>
+          <td style="padding-right:24px;"><span style="color:#ff9f43;font-weight:700;">Attack Vector</span><br>Network / Public Search Engines</td>
+          <td><span style="color:#ff9f43;font-weight:700;">Exploitability</span><br>High — freely indexed by Google</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Stats Row -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:24px 36px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td align="center" style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:8px;padding:16px;width:30%;">
+            <p style="margin:0;font-size:26px;font-weight:800;color:{dt_badge_color};">{unique_urls}</p>
+            <p style="margin:4px 0 0;font-size:11px;color:#5c6078;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Affected URLs</p>
+          </td>
+          <td width="16"></td>
+          <td align="center" style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:8px;padding:16px;width:30%;">
+            <p style="margin:0;font-size:26px;font-weight:800;color:#ff9f43;">{total_instances}</p>
+            <p style="margin:4px 0 0;font-size:11px;color:#5c6078;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Total Instances</p>
+          </td>
+          <td width="16"></td>
+          <td align="center" style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:8px;padding:16px;width:30%;">
+            <p style="margin:0;font-size:26px;font-weight:800;color:#00d4aa;">{avg_confidence:.0f}%</p>
+            <p style="margin:4px 0 0;font-size:11px;color:#5c6078;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Avg Confidence</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Affected Resources Table -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:0 36px 8px;">
+      <p style="margin:0 0 12px;font-size:11px;font-weight:700;color:#00d4aa;letter-spacing:2px;text-transform:uppercase;
+                border-top:1px solid #2a2d3e;padding-top:20px;">Affected Government Resources</p>
+      <table width="100%" cellpadding="0" cellspacing="0"
+             style="border:1px solid #2a2d3e;border-radius:8px;overflow:hidden;font-size:12px;">
+        <tr style="background:#1c1f2e;">
+          <th style="padding:10px 16px;text-align:left;color:#5c6078;font-size:11px;font-weight:600;
+                     letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid #2a2d3e;">File URL</th>
+          <th style="padding:10px 16px;text-align:left;color:#5c6078;font-size:11px;font-weight:600;
+                     letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid #2a2d3e;white-space:nowrap;">Confidence</th>
+          <th style="padding:10px 16px;text-align:center;color:#5c6078;font-size:11px;font-weight:600;
+                     letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid #2a2d3e;">Count</th>
+        </tr>
+        {url_rows}
+      </table>
+    </td>
+  </tr>
+
+  <!-- Recommended Actions -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:20px 36px 8px;">
+      <p style="margin:0 0 12px;font-size:11px;font-weight:700;color:#00d4aa;letter-spacing:2px;text-transform:uppercase;
+                border-top:1px solid #2a2d3e;padding-top:20px;">Recommended Actions</p>
+      <table cellpadding="0" cellspacing="0" width="100%">
+        <tr>
+          <td style="background:#1c1f2e;border:1px solid #2a2d3e;border-left:3px solid #ff4d6a;
+                     border-radius:6px;padding:12px 16px;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#ff4d6a;">URGENT — 0–2 hours</p>
+            <p style="margin:0;font-size:12px;color:#8b8fa7;">Immediately remove or restrict public access to affected files. Verify data integrity and begin disclosure preparation.</p>
+          </td>
+        </tr>
+        <tr><td height="8"></td></tr>
+        <tr>
+          <td style="background:#1c1f2e;border:1px solid #2a2d3e;border-left:3px solid #ff9f43;
+                     border-radius:6px;padding:12px 16px;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#ff9f43;">HIGH PRIORITY — 2–24 hours</p>
+            <p style="margin:0;font-size:12px;color:#8b8fa7;">Conduct forensic timeline analysis. Notify impacted individuals through official government channels. Implement emergency access controls.</p>
+          </td>
+        </tr>
+        <tr><td height="8"></td></tr>
+        <tr>
+          <td style="background:#1c1f2e;border:1px solid #2a2d3e;border-left:3px solid #00d4aa;
+                     border-radius:6px;padding:12px 16px;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#00d4aa;">FOLLOW-UP — 1–7 days</p>
+            <p style="margin:0;font-size:12px;color:#8b8fa7;">Issue formal incident response report. Coordinate with law enforcement if required. Deploy preventive scanning policies to avoid recurrence.</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>"""
+
         return html
     
     def _create_abuse_email_body(self, impersonation_type: str, findings: List[Dict], scan_id: int = None) -> str:
         """Create HTML email body for abuse report (Module 2)"""
-        
+
         impersonation_display = {
             'aadhaar_login': 'Aadhaar Login Portal',
             'pan_verification': 'PAN Verification Service',
@@ -498,140 +618,177 @@ class EmailReporter:
             'passport_services': 'Passport Services',
             'license_services': 'License Services'
         }.get(impersonation_type, impersonation_type.replace('_', ' ').title())
-        
+
         total_sites = len(set(f.get('url', '') for f in findings))
         suspicious_sites = len(findings)
-        
-        html = f"""
-        <html>
-        <head>
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; }}
-                .header {{ background: linear-gradient(135deg, #f57f17 0%, #e65100 100%); color: white; padding: 25px; margin-bottom: 20px; }}
-                .content {{ padding: 0 20px 20px 20px; }}
-                .alert {{ background-color: #ffe0b2; border-left: 5px solid #ff6f00; padding: 15px; margin: 20px 0; }}
-                .danger {{ background-color: #ffebee; border-left: 5px solid #d32f2f; padding: 15px; margin: 20px 0; }}
-                .stats {{ background-color: #f5f5f5; padding: 15px; margin: 20px 0; border-radius: 5px; }}
-                table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
-                th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-                th {{ background-color: #ff6f00; color: white; font-weight: bold; }}
-                tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                .footer {{ background-color: #f5f5f5; padding: 15px; margin-top: 30px; font-size: 11px; border-radius: 5px; }}
-                h1 {{ margin: 0; }}
-                h2 {{ color: #ff6f00; border-bottom: 2px solid #ff6f00; padding-bottom: 10px; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>⚠️ ABUSE REPORT - GOVERNMENT IMPERSONATION</h1>
-                <p style="margin: 10px 0 0 0;">Fraudulent {impersonation_display} Website(s) Detected</p>
-                <p style="margin: 5px 0 0 0; font-size: 12px;">Report Generated: {datetime.now().strftime('%A, %B %d, %Y at %H:%M:%S')}</p>
-            </div>
-            
-            <div class="content">
-                <div class="danger">
-                    <strong>🚨 CRITICAL FRAUD ALERT</strong><br>
-                    Multiple websites impersonating legitimate government services have been discovered.
-                    These sites are designed to deceive Indian citizens into disclosing sensitive personal information.
-                </div>
-                
-                <div class="alert">
-                    <strong>Threat Vector:</strong> Social Engineering, Phishing, Identity Fraud<br>
-                    <strong>Target Audience:</strong> Indian Public/Citizens<br>
-                    <strong>Intent:</strong> Personal Information Theft, Financial Fraud, Identity Theft
-                </div>
-                
-                <h2>📊 Incident Summary</h2>
-                <div class="stats">
-                    <ul style="margin: 0;">
-                        <li><strong>Impersonation Type:</strong> {impersonation_display}</li>
-                        <li><strong>Malicious Domains/Sites Found:</strong> {total_sites}</li>
-                        <li><strong>Total Suspicious Indicators:</strong> {suspicious_sites}</li>
-                        {f'<li><strong>Scan ID:</strong> {scan_id}</li>' if scan_id else ''}
-                        <li><strong>Detection Method:</strong> Domain Analysis + SSL Certificate Inspection + UI Pattern Matching</li>
-                        <li><strong>Report Priority:</strong> CRITICAL</li>
-                    </ul>
-                </div>
-                
-                <h2>🔴 Detected Phishing/Spoofing Sites</h2>
-                <table>
-                    <tr>
-                        <th>Suspicious Domain/URL</th>
-                        <th>Impersonation Severity</th>
-                        <th>Associated Risk</th>
-                    </tr>
-        """
-        
-        # Add suspicious sites
-        for finding in findings[:20]:  # Limit to 20 findings
+        report_date = datetime.now().strftime('%d %B %Y, %H:%M UTC')
+
+        # Build suspicious site rows
+        site_rows = ''
+        for finding in findings[:20]:
             url = finding.get('url', 'Unknown')
             severity = finding.get('severity', 'HIGH')
             risk = finding.get('risk', 'Identity Theft, Financial Fraud')
-            severity_color = '#d32f2f' if severity in ['CRITICAL', 'HIGH'] else '#ff9800'
-            
-            html += f"""
-                    <tr>
-                        <td><a href="{url}" style="color: #1976d2; text-decoration: none;">{url[:60]}...</a></td>
-                        <td style="color: {severity_color}; font-weight: bold;">{severity}</td>
-                        <td>{risk}</td>
-                    </tr>
-            """
-        
+            sev_color = '#ff4d6a' if severity in ('CRITICAL', 'HIGH') else '#ff9f43'
+            url_display = url[:65] + ('…' if len(url) > 65 else '')
+            site_rows += f'''
+            <tr style="border-bottom:1px solid #2a2d3e;">
+              <td style="padding:10px 16px;font-size:12px;word-break:break-all;max-width:320px;">
+                <a href="{url}" style="color:#00d4aa;text-decoration:none;">{url_display}</a>
+              </td>
+              <td style="padding:10px 16px;white-space:nowrap;">
+                <span style="color:{sev_color};font-weight:700;font-size:12px;">{severity}</span>
+              </td>
+              <td style="padding:10px 16px;font-size:12px;color:#8b8fa7;">{risk}</td>
+            </tr>'''
         if len(findings) > 20:
-            html += f"""
-                    <tr>
-                        <td colspan="3" style="text-align: center; font-style: italic;">
-                            ... and {len(findings) - 20} additional suspicious sites detected
-                        </td>
-                    </tr>
-            """
-        
-        html += """
-                </table>
-                
-                <h2>⚡ Immediate Action Items</h2>
-                <ol style="padding-left: 20px;">
-                    <li><strong>URGENT (Immediate):</strong>
-                        <ul>
-                            <li>Issue public warning about these fraudulent websites</li>
-                            <li>Contact domain registrars and hosting providers for takedown</li>
-                            <li>Coordinate with law enforcement (Cyber Crime Cell)</li>
-                        </ul>
-                    </li>
-                    <li><strong>HIGH PRIORITY (0-24 hours):</strong>
-                        <ul>
-                            <li>Report to relevant government department for official action</li>
-                            <li>Request DNS sinkholing or domain suspension</li>
-                            <li>Notify major search engines about the fraudulent sites</li>
-                        </ul>
-                    </li>
-                    <li><strong>FOLLOW-UP (1-7 days):</strong>
-                        <ul>
-                            <li>Launch public awareness campaign</li>
-                            <li>Investigate perpetrators and financial flows</li>
-                            <li>Implement protective measures for legitimate government portals</li>
-                        </ul>
-                    </li>
-                </ol>
-                
-                <h2>🛡️ Public Protection Recommendations</h2>
-                <ul style="padding-left: 20px;">
-                    <li>Always verify government websites through official channels (official.gov.in listings)</li>
-                    <li>Beware of unsolicited emails or messages requesting personal information</li>
-                    <li>Check SSL certificates and domain names carefully before entering sensitive data</li>
-                    <li>Report suspicious websites to cybercrime units immediately</li>
-                    <li>For Aadhaar: Only use official UIDAI website (www.uidai.gov.in)</li>
-                </ul>
-            </div>
-            
-            <div class="footer">
-                <p><strong>Report Generated By:</strong> Automated Sensitive Data & Spoofing Detection Framework v2.0</p>
-                <p><strong>Report Type:</strong> Abuse Report - Government Impersonation</p>
-                <p><strong>Compliance:</strong> Indian Penal Code, IT Act 2000, Cybercrime Law</p>
-                <p><em>This is an automated abuse/fraud report. All findings require urgent verification and swift action. For assistance, contact Cyber Crime Investigation Cell.</em></p>
-            </div>
-        </body>
-        </html>
-        """
-        
+            site_rows += f'''
+            <tr><td colspan="3" style="padding:8px 16px;color:#5c6078;font-size:12px;font-style:italic;text-align:center;">
+              + {len(findings) - 20} additional suspicious sites detected
+            </td></tr>'''
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>CyberShield — Spoofing Website Detection Report</title></head>
+<body style="margin:0;padding:0;background:#0d0f1a;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;color:#e2e4ed;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#0d0f1a;padding:32px 16px;">
+<tr><td align="center">
+<table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;">
+
+  <!-- Header -->
+  <tr>
+    <td style="background:linear-gradient(135deg,#1f150d 0%,#0a1628 100%);border:1px solid #ff9f4344;
+               border-radius:12px 12px 0 0;padding:32px 36px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="vertical-align:top;">
+            <h1 style="margin:0 0 4px;font-size:21px;font-weight:800;color:#e2e4ed;line-height:1.2;">
+              Government Website Spoofing Detected
+            </h1>
+            <p style="margin:0;font-size:12px;color:#5c6078;">{report_date}{f' &nbsp;&#8226;&nbsp; Scan ID: {scan_id}' if scan_id else ''}</p>
+          </td>
+          <td align="right" valign="top">
+            <span style="display:inline-block;background:#ff9f4318;color:#ff9f43;border:1px solid #ff9f4344;
+                         font-size:10px;font-weight:700;padding:4px 12px;border-radius:20px;letter-spacing:1px;">SPOOFING ALERT</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Danger Banner -->
+  <tr>
+    <td style="background:#ff4d6a14;border-left:4px solid #ff4d6a;border-right:1px solid #2a2d3e;
+               border-bottom:1px solid #2a2d3e;padding:14px 36px;">
+      <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#ff4d6a;">CRITICAL SPOOFING ALERT</p>
+      <p style="margin:0;font-size:12px;color:#8b8fa7;">A spoofing website detected for impersonation of Indian Government services has been identified. These fraudulent portals are designed to deceive citizens into sharing sensitive personal and financial information.</p>
+    </td>
+  </tr>
+
+  <!-- Threat Meta -->
+  <tr>
+    <td style="background:#ff9f4314;border-left:4px solid #ff9f43;border-right:1px solid #2a2d3e;
+               border-bottom:1px solid #2a2d3e;padding:12px 36px;">
+      <table cellpadding="0" cellspacing="6" style="font-size:12px;color:#8b8fa7;">
+        <tr>
+          <td style="padding-right:24px;"><span style="color:#ff9f43;font-weight:700;">Threat Type</span><br>Website Spoofing / Domain Squatting</td>
+          <td style="padding-right:24px;"><span style="color:#ff9f43;font-weight:700;">Target</span><br>Indian Citizens / General Public</td>
+          <td><span style="color:#ff9f43;font-weight:700;">Intent</span><br>Credential Harvesting, Identity Theft</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Stats Row -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:24px 36px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td align="center" style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:8px;padding:16px;width:44%;">
+            <p style="margin:0;font-size:28px;font-weight:800;color:#ff4d6a;">{total_sites}</p>
+            <p style="margin:4px 0 0;font-size:11px;color:#5c6078;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Spoofed Domains</p>
+          </td>
+          <td width="20"></td>
+          <td align="center" style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:8px;padding:16px;width:44%;">
+            <p style="margin:0;font-size:28px;font-weight:800;color:#ff9f43;">{suspicious_sites}</p>
+            <p style="margin:4px 0 0;font-size:11px;color:#5c6078;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Suspicious Indicators</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Phishing Sites Table -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:0 36px 8px;">
+      <p style="margin:0 0 12px;font-size:11px;font-weight:700;color:#ff9f43;letter-spacing:2px;text-transform:uppercase;
+                border-top:1px solid #2a2d3e;padding-top:20px;">Detected Spoofed Government Sites</p>
+      <table width="100%" cellpadding="0" cellspacing="0"
+             style="border:1px solid #2a2d3e;border-radius:8px;overflow:hidden;font-size:12px;">
+        <tr style="background:#1c1f2e;">
+          <th style="padding:10px 16px;text-align:left;color:#5c6078;font-size:11px;font-weight:600;
+                     letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid #2a2d3e;">Spoofed Domain / URL</th>
+          <th style="padding:10px 16px;text-align:left;color:#5c6078;font-size:11px;font-weight:600;
+                     letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid #2a2d3e;white-space:nowrap;">Severity</th>
+          <th style="padding:10px 16px;text-align:left;color:#5c6078;font-size:11px;font-weight:600;
+                     letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid #2a2d3e;">Risk</th>
+        </tr>
+        {site_rows}
+      </table>
+    </td>
+  </tr>
+
+  <!-- Action Items -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:20px 36px 8px;">
+      <p style="margin:0 0 12px;font-size:11px;font-weight:700;color:#ff9f43;letter-spacing:2px;text-transform:uppercase;
+                border-top:1px solid #2a2d3e;padding-top:20px;">Immediate Action Items</p>
+      <table cellpadding="0" cellspacing="0" width="100%">
+        <tr>
+          <td style="background:#1c1f2e;border:1px solid #2a2d3e;border-left:3px solid #ff4d6a;
+                     border-radius:6px;padding:12px 16px;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#ff4d6a;">URGENT — Immediate</p>
+            <p style="margin:0;font-size:12px;color:#8b8fa7;">Issue a public advisory warning citizens about the spoofed websites. Contact domain registrars and hosting providers to initiate immediate takedown. Coordinate with the Cyber Crime Cell.</p>
+          </td>
+        </tr>
+        <tr><td height="8"></td></tr>
+        <tr>
+          <td style="background:#1c1f2e;border:1px solid #2a2d3e;border-left:3px solid #ff9f43;
+                     border-radius:6px;padding:12px 16px;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#ff9f43;">HIGH PRIORITY — 0–24 hours</p>
+            <p style="margin:0;font-size:12px;color:#8b8fa7;">Report spoofed domains to the relevant government department. Request DNS sinkholing or domain suspension. Notify major search engines and browsers to flag or de-index the spoofed sites.</p>
+          </td>
+        </tr>
+        <tr><td height="8"></td></tr>
+        <tr>
+          <td style="background:#1c1f2e;border:1px solid #2a2d3e;border-left:3px solid #00d4aa;
+                     border-radius:6px;padding:12px 16px;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#00d4aa;">FOLLOW-UP — 1–7 days</p>
+            <p style="margin:0;font-size:12px;color:#8b8fa7;">Launch a public awareness campaign to educate citizens on verifying official portals. Investigate perpetrators and pursue legal action. Deploy continuous monitoring to detect future spoofing attempts.</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Public Safety Tips -->
+  <tr>
+    <td style="background:#161822;border:1px solid #2a2d3e;border-top:none;padding:20px 36px 20px;">
+      <p style="margin:0 0 10px;font-size:11px;font-weight:700;color:#00d4aa;letter-spacing:2px;text-transform:uppercase;
+                border-top:1px solid #2a2d3e;padding-top:20px;">Public Protection Guidance</p>
+      <table cellpadding="0" cellspacing="4" style="font-size:12px;color:#8b8fa7;">
+        <tr><td style="padding:3px 0;">&#8226;&nbsp; Only use official government portals listed on <strong style="color:#e2e4ed;">india.gov.in</strong></td></tr>
+        <tr><td style="padding:3px 0;">&#8226;&nbsp; Always verify domain names and SSL certificates before entering personal data</td></tr>
+        <tr><td style="padding:3px 0;">&#8226;&nbsp; For Aadhaar services, only use <strong style="color:#e2e4ed;">www.uidai.gov.in</strong></td></tr>
+        <tr><td style="padding:3px 0;">&#8226;&nbsp; Report suspicious websites immediately to <strong style="color:#e2e4ed;">cybercrime.gov.in</strong></td></tr>
+      </table>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>"""
+
         return html

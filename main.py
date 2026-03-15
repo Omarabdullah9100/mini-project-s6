@@ -15,6 +15,7 @@ import time
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
+from urllib.parse import urlparse
 
 # Import custom modules
 from database import init_db, get_db
@@ -61,6 +62,12 @@ gids_detector = GovernmentImersonationDetector()
 cancelled_scans = set()
 cancelled_scans_lock = Lock()
 SUPPORTED_SENSITIVE_TYPES = {"aadhaar", "pan", "voter_id", "passport"}
+SENSITIVE_SEARCH_KEYWORDS = {
+    "aadhaar": ["aadhaar", "aadhar", "uid", "uidai", "enrollment", "card no"],
+    "pan": ["pan", "permanent account", "income tax", "card no"],
+    "voter_id": ["voter", "epic", "election", "voter id"],
+    "passport": ["passport", "travel document", "passport no"],
+}
 SUPPORTED_IMPERSONATION_TYPES = {
     "aadhaar_login",
     "pan_verification",
@@ -141,12 +148,83 @@ def get_scan_detections_query(scan: Scan, db: Session):
     return query
 
 
+def normalize_selected_urls(urls: List[str]) -> List[str]:
+    """Normalize and deduplicate selected URLs from frontend checkbox values."""
+    normalized = []
+    seen = set()
+
+    for raw_url in urls or []:
+        url = str(raw_url).strip()
+        if not url:
+            continue
+        if url not in seen:
+            seen.add(url)
+            normalized.append(url)
+
+    return normalized
+
+
+def normalize_selected_domains(domains: List[str]) -> set:
+    """Normalize and deduplicate selected domains from frontend checkbox values."""
+    normalized = set()
+
+    for raw_domain in domains or []:
+        domain = str(raw_domain).strip().lower()
+        if domain:
+            normalized.add(domain)
+
+    return normalized
+
+
+def compute_sensitive_result_score(
+    result: dict,
+    data_type: str,
+    domain: str,
+    expected_file_type: str = None,
+) -> float:
+    """Lightweight relevance score based on title/snippet/domain/filetype signals."""
+    title = (result.get("title") or "").lower()
+    snippet = (result.get("snippet") or "").lower()
+    url = (result.get("link") or "").strip()
+
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+
+    score = 0.0
+    for keyword in SENSITIVE_SEARCH_KEYWORDS.get(data_type, []):
+        if keyword in title:
+            score += 3.0
+        if keyword in snippet:
+            score += 1.5
+        if keyword in path:
+            score += 2.0
+
+    safe_domain = (domain or "").strip().lower()
+    if safe_domain and safe_domain in host:
+        score += 4.0
+    if host.endswith(".gov.in") or host == "gov.in":
+        score += 2.0
+
+    if expected_file_type:
+        ext = expected_file_type.lower().strip()
+        if path.endswith(f".{ext}"):
+            score += 2.0
+
+        mime_like = f"{result.get('mime', '')} {result.get('file_format', '')}".lower()
+        if ext in mime_like:
+            score += 1.0
+
+    return round(score, 2)
+
+
 # Pydantic models for API requests
 class ScanRequest(BaseModel):
     data_types: List[str]  # ['aadhaar', 'pan', 'bank_account', etc.]
     file_types: Optional[List[str]] = ['pdf', 'doc', 'docx']
     domain: Optional[str] = 'gov.in'
     max_results: Optional[int] = 10
+    rerank_candidates: Optional[bool] = True
 
 
 class GovernmentImersonationScanRequest(BaseModel):
@@ -265,7 +343,8 @@ async def start_sensitive_data_scan(
             normalized_data_types,
             request.file_types,
             request.domain,
-            request.max_results
+            request.max_results,
+            request.rerank_candidates,
         )
         
         logger.info(f"✅ Scan {scan.scan_id} started")
@@ -446,10 +525,10 @@ async def send_scan_report(
     request: SendReportRequest,
     db: Session = Depends(get_db)
 ):
-    """Send a report with selected detected URLs to CERT-In"""
+    """Send a module-aware report with selected detections to CERT-In"""
     try:
         scan_id = request.scan_id
-        selected_urls = request.selected_urls
+        selected_urls = normalize_selected_urls(request.selected_urls)
         
         if not selected_urls:
             raise HTTPException(status_code=400, detail="No URLs selected for report")
@@ -463,61 +542,126 @@ async def send_scan_report(
         detections = get_scan_detections_query(scan, db).filter(
             DetectedLeak.file_url.in_(selected_urls)
         ).all()
+
+        # Enforce exact selected URL matching before composing email content.
+        selected_url_set = set(selected_urls)
+        detections = [d for d in detections if d.file_url in selected_url_set]
         
         if not detections:
             raise HTTPException(status_code=400, detail="No detections found for selected URLs")
         
-        # Format detection data for email
+        unique_reported_urls = len(set(d.file_url for d in detections))
+
+        if scan.scan_type == "government_impersonation":
+            findings_by_type = {}
+            for detection in detections:
+                finding_type = str(detection.data_type or "unknown").strip().lower()
+                evidence = {}
+                try:
+                    evidence = json.loads(detection.evidence) if detection.evidence else {}
+                except Exception:
+                    evidence = {}
+
+                findings_by_type.setdefault(finding_type, []).append({
+                    "url": detection.file_url,
+                    "impersonation_type": finding_type,
+                    "confidence": detection.confidence,
+                    "domain": evidence.get("domain", ""),
+                    "title": evidence.get("title", ""),
+                    "risk_level": evidence.get("risk_level", "MEDIUM"),
+                    "severity": "CRITICAL" if detection.confidence >= 80 else "HIGH"
+                })
+
+            success_count = 0
+            failure_count = 0
+            for finding_type, grouped_findings in findings_by_type.items():
+                sent = email_reporter.send_abuse_report(finding_type, grouped_findings, scan_id)
+                if sent:
+                    success_count += 1
+                else:
+                    failure_count += 1
+
+            success = success_count > 0 and failure_count == 0
+
+            email_report = EmailReport(
+                scan_id=scan_id,
+                recipient=settings.cert_in_email,
+                subject=f"[SPOOFING ALERT] Government Website Spoofing Detected - Scan {scan_id} (Manual Report)",
+                body=f"Manual abuse report with {len(selected_url_set)} selected URL(s)",
+                status="sent" if success else "failed",
+                sent_time=datetime.utcnow() if success else None
+            )
+            db.add(email_report)
+            db.commit()
+
+            if not success:
+                error_detail = email_reporter.last_error or "Failed to send abuse report"
+                raise HTTPException(status_code=500, detail=error_detail)
+
+            logger.info(
+                f"📧 Sent manual abuse report for scan {scan_id} with {len(selected_url_set)} selected URL(s) to {settings.cert_in_email}"
+            )
+
+            return {
+                "status": "success",
+                "message": "Government impersonation abuse report sent successfully to CERT-In",
+                "recipient": settings.cert_in_email,
+                "urls_reported": unique_reported_urls,
+                "detections_reported": len(detections),
+                "module": "government_impersonation"
+            }
+
+        # Default to Module 1 report format
         detection_data = []
         for detection in detections:
             evidence = {}
             try:
                 evidence = json.loads(detection.evidence) if detection.evidence else {}
-            except:
-                pass
-            
+            except Exception:
+                evidence = {}
+
             detection_data.append({
                 "file_url": detection.file_url,
                 "data_type": detection.data_type,
                 "confidence": detection.confidence,
                 "evidence": evidence.get("context", "") or evidence.get("match", "")
             })
-        
-        # Send the email report
+
         duration = (scan.end_time - scan.start_time).total_seconds() if scan.end_time else 0
         scan_results = {
             "scan_id": scan_id,
             "duration": f"{duration:.1f} seconds",
-            "total_urls_selected": len(selected_urls),
+            "total_urls_selected": len(selected_url_set),
+            "total_urls_reported": unique_reported_urls,
             "detections_reported": len(detections)
         }
-        
+
         success = email_reporter.send_sensitive_data_report(scan_results, detection_data)
-        
-        # Log the email report
+
         email_report = EmailReport(
             scan_id=scan_id,
             recipient=settings.cert_in_email,
             subject=f"[URGENT] Sensitive Data Exposure Detected - Scan {scan_id} (Manual Report)",
-            body=f"Manual report with {len(selected_urls)} selected URL(s)",
+            body=f"Manual report with {len(selected_url_set)} selected URL(s)",
             status="sent" if success else "failed",
             sent_time=datetime.utcnow() if success else None
         )
         db.add(email_report)
         db.commit()
-        
+
         if not success:
             error_detail = email_reporter.last_error or "Failed to send email report"
             raise HTTPException(status_code=500, detail=error_detail)
-        
-        logger.info(f"📧 Sent manual report for scan {scan_id} with {len(selected_urls)} selected URL(s) to {settings.cert_in_email}")
-        
+
+        logger.info(f"📧 Sent manual report for scan {scan_id} with {len(selected_url_set)} selected URL(s) to {settings.cert_in_email}")
+
         return {
             "status": "success",
-            "message": f"Report sent successfully to CERT-In",
+            "message": "Report sent successfully to CERT-In",
             "recipient": settings.cert_in_email,
-            "urls_reported": len(selected_urls),
-            "detections_reported": len(detections)
+            "urls_reported": unique_reported_urls,
+            "detections_reported": len(detections),
+            "module": "sensitive_data"
         }
         
     except HTTPException:
@@ -614,7 +758,8 @@ def execute_sensitive_data_scan(
     data_types: List[str],
     file_types: List[str],
     domain: str,
-    max_results: int
+    max_results: int,
+    rerank_candidates: bool = True,
 ):
     """
     Execute the sensitive data scan (background task)
@@ -652,7 +797,7 @@ def execute_sensitive_data_scan(
             return
         
         # Generate dorking queries
-        queries = google_search.generate_dork_queries(selected_data_types, domain)
+        queries = google_search.generate_dork_queries(selected_data_types, domain, selected_file_types)
         logger.info(f"📋 Generated {len(queries)} search queries")
 
         if not queries:
@@ -666,7 +811,26 @@ def execute_sensitive_data_scan(
         processed_urls = set()
         url_detections = {}  # Dictionary to consolidate detections by URL
 
-        candidate_urls = []
+        # Candidate pool and per-query telemetry
+        candidate_url_map = {}
+        query_metrics = {}
+
+        def get_metric_bucket(query_info: dict):
+            query_key = f"{query_info['data_type']}|{query_info.get('file_type', 'any')}|{query_info['query']}"
+            if query_key not in query_metrics:
+                query_metrics[query_key] = {
+                    "data_type": query_info["data_type"],
+                    "file_type": query_info.get("file_type", "any"),
+                    "query": query_info["query"],
+                    "search_results": 0,
+                    "unique_candidates": 0,
+                    "selected_for_processing": 0,
+                    "detected_urls": 0,
+                    "detected_instances": 0,
+                    "confidence_sum": 0.0,
+                    "elapsed_ms": 0,
+                }
+            return query_key, query_metrics[query_key]
 
         # Collect candidate URLs first (strictly bounded)
         for query_info in queries:
@@ -677,11 +841,13 @@ def execute_sensitive_data_scan(
             try:
                 query = query_info['query']
                 query_data_type = query_info['data_type']
+                query_key, metric = get_metric_bucket(query_info)
                 
                 # Skip if this data type wasn't selected
                 if query_data_type not in selected_data_types:
                     continue
                 
+                start_time = time.time()
                 pages_needed = min(
                     settings.max_search_pages_per_query,
                     max(1, math.ceil(effective_max_results / 10))
@@ -689,10 +855,15 @@ def execute_sensitive_data_scan(
                 results = google_search.search(
                     query,
                     num_results=10,
+                    file_type=query_info.get('file_type'),
                     max_pages=pages_needed,
                     should_stop=lambda: is_scan_cancelled(scan_id, db)
                 )
+                metric["elapsed_ms"] += int((time.time() - start_time) * 1000)
+                metric["search_results"] += len(results)
                 logger.info(f"🔎 Query: {query} -> {len(results)} results")
+
+                local_unique_urls = set()
                 
                 for result in results:
                     if is_scan_cancelled(scan_id, db):
@@ -708,19 +879,49 @@ def execute_sensitive_data_scan(
                         continue
                     
                     processed_urls.add(url)
+                    local_unique_urls.add(url)
 
-                    candidate_urls.append((url, query_data_type))
-                    if len(candidate_urls) >= effective_max_results:
-                        break
+                    score = compute_sensitive_result_score(
+                        result,
+                        query_data_type,
+                        domain,
+                        query_info.get('file_type')
+                    )
+
+                    existing = candidate_url_map.get(url)
+                    candidate_payload = {
+                        "url": url,
+                        "data_type": query_data_type,
+                        "score": score,
+                        "query_key": query_key,
+                    }
+
+                    # Keep highest relevance association when URL appears across multiple queries.
+                    if not existing or score > existing["score"]:
+                        candidate_url_map[url] = candidate_payload
+
+                metric["unique_candidates"] += len(local_unique_urls)
                 
-                if len(candidate_urls) >= effective_max_results:
-                    break
-                    
             except Exception as e:
                 logger.error(f"❌ Query execution failed: {str(e)}")
                 continue
 
-        def process_single_url(url: str, query_data_type: str):
+        all_candidates = list(candidate_url_map.values())
+        if rerank_candidates:
+            all_candidates.sort(key=lambda item: (-item["score"], item["url"]))
+
+        selected_candidates = all_candidates[:effective_max_results]
+        for candidate in selected_candidates:
+            metric = query_metrics.get(candidate["query_key"])
+            if metric:
+                metric["selected_for_processing"] += 1
+
+        logger.info(
+            f"📈 Candidate selection: pool={len(all_candidates)} "
+            f"selected={len(selected_candidates)} rerank={'on' if rerank_candidates else 'off'}"
+        )
+
+        def process_single_url(url: str, query_data_type: str, query_key: str):
             max_url_retries = 2
 
             for url_attempt in range(max_url_retries):
@@ -745,6 +946,7 @@ def execute_sensitive_data_scan(
                         "url": url,
                         "data_type": query_data_type,
                         "matches": matches,
+                        "query_key": query_key,
                     }
                 except Exception as url_error:
                     logger.warning(
@@ -757,11 +959,11 @@ def execute_sensitive_data_scan(
             return None
 
         # Process URLs in parallel
-        if candidate_urls and not is_scan_cancelled(scan_id, db):
+        if selected_candidates and not is_scan_cancelled(scan_id, db):
             with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
                 futures = [
-                    executor.submit(process_single_url, url, query_data_type)
-                    for url, query_data_type in candidate_urls
+                    executor.submit(process_single_url, candidate["url"], candidate["data_type"], candidate["query_key"])
+                    for candidate in selected_candidates
                 ]
 
                 for future in as_completed(futures):
@@ -778,6 +980,13 @@ def execute_sensitive_data_scan(
                     url = result["url"]
                     detected_type = result["data_type"]
                     matches = result["matches"]
+                    query_key = result["query_key"]
+
+                    metric = query_metrics.get(query_key)
+                    if metric:
+                        metric["detected_urls"] += 1
+                        metric["detected_instances"] += len(matches)
+                        metric["confidence_sum"] += sum(float(match.get("confidence", 0)) for match in matches)
 
                     if url not in url_detections:
                         url_detections[url] = {
@@ -808,8 +1017,29 @@ def execute_sensitive_data_scan(
                             "evidence": match['context']
                         })
 
+                    db.query(Scan).filter(Scan.scan_id == scan_id).update({"results_count": len(url_detections)})
                     db.commit()
                     logger.info(f"✅ Successfully processed {url}")
+
+        # Log per-query performance metrics to identify high-yield dorks.
+        ranked_metrics = sorted(
+            query_metrics.values(),
+            key=lambda item: (item["detected_instances"], item["detected_urls"], item["selected_for_processing"]),
+            reverse=True,
+        )
+        for item in ranked_metrics:
+            avg_conf = (
+                item["confidence_sum"] / item["detected_instances"]
+                if item["detected_instances"] else 0.0
+            )
+            logger.info(
+                "📊 QueryPerf | "
+                f"type={item['data_type']} file={item['file_type']} "
+                f"results={item['search_results']} unique={item['unique_candidates']} "
+                f"selected={item['selected_for_processing']} detected_urls={item['detected_urls']} "
+                f"detected_instances={item['detected_instances']} avg_conf={avg_conf:.1f}% "
+                f"elapsed_ms={item['elapsed_ms']} query={item['query']}"
+            )
         
         # Update scan status
         stopped = is_scan_cancelled(scan_id, db)
@@ -978,7 +1208,7 @@ async def send_abuse_report(
     """
     try:
         scan_id = request.scan_id
-        selected_domains = request.selected_domains or []
+        selected_domains = normalize_selected_domains(request.selected_domains or [])
         normalized_types = normalize_impersonation_types([request.impersonation_type])
         if normalized_types:
             impersonation_type = normalized_types[0]
@@ -997,7 +1227,20 @@ async def send_abuse_report(
         
         # Filter by selected domains if provided
         if selected_domains:
-            findings = [f for f in findings if any(domain in f.file_url for domain in selected_domains)]
+            filtered_findings = []
+            for finding in findings:
+                evidence = {}
+                try:
+                    evidence = json.loads(finding.evidence) if finding.evidence else {}
+                except Exception:
+                    evidence = {}
+
+                evidence_domain = str(evidence.get("domain", "")).strip().lower()
+                finding_domain = urlparse(finding.file_url or "").netloc.lower()
+                if evidence_domain in selected_domains or finding_domain in selected_domains:
+                    filtered_findings.append(finding)
+
+            findings = filtered_findings
         
         if not findings:
             raise HTTPException(status_code=400, detail=f"No findings found for {impersonation_type}")
@@ -1032,7 +1275,7 @@ async def send_abuse_report(
         email_report = EmailReport(
             scan_id=scan_id,
             recipient=settings.cert_in_email,
-            subject=f"ABUSE REPORT - Government Impersonation - {impersonation_type.upper()}",
+            subject=f"SPOOFING ALERT - Spoofing Website Detected for Impersonation - {impersonation_type.upper()}",
             body=f"Abuse report for {impersonation_type} with {len(findings)} suspicious sites",
             status="sent",
             sent_time=datetime.utcnow()
